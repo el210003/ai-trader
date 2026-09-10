@@ -1,0 +1,19 @@
+# python
+__pycache__/
+*.pyc
+
+# local data (db, models, caches, journals)
+data/
+
+# environments
+venv/
+.venv/
+env/
+
+# secrets / machine-specific launchers
+.env
+serve.bat
+
+# os/editor
+Thumbs.db
+.DS_Store

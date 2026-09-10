@@ -1,0 +1,511 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MOCK — AI Trader right-column redesign (for review)</title>
+<script src="https://unpkg.com/lightweight-charts@4.1.3/dist/lightweight-charts.standalone.production.js"></script>
+<style>
+:root{
+  --bg:#07090f; --panel:#0d1117; --panel2:#131922; --panel3:#181f2b;
+  --border:#1e2530; --border2:#2a3342;
+  --text:#e2e8f2; --muted:#8792a6; --dim:#5b657a;
+  --green:#2dd4a7; --green-dim:rgba(45,212,167,.12);
+  --red:#f25f5c;  --red-dim:rgba(242,95,92,.12);
+  --amber:#f5b83d; --amber-dim:rgba(245,184,61,.1);
+  --blue:#6c9eff; --violet:#9d7bff;
+  --accent:#39d0c3;
+  --mono:"Cascadia Mono","Consolas","JetBrains Mono",monospace;
+  --shadow:0 8px 28px rgba(0,0,0,.45);
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:
+  radial-gradient(1200px 500px at 20% -10%, rgba(57,208,195,.05), transparent 60%),
+  radial-gradient(900px 400px at 90% 110%, rgba(109,158,255,.05), transparent 60%),
+  var(--bg);
+  color:var(--text); font:13px/1.5 "Segoe UI",system-ui,sans-serif; height:100vh; display:flex; flex-direction:column; overflow:hidden}
+
+/* ---------- header (context only) ---------- */
+header{display:flex;align-items:center;gap:10px;padding:10px 16px;border-bottom:1px solid var(--border);background:rgba(13,17,23,.85);backdrop-filter:blur(6px)}
+.brand{font-size:15px;font-weight:700;letter-spacing:.2px}
+.brand span{color:var(--accent);font-weight:400;font-size:12px;margin-left:6px}
+.badge{font-size:11px;padding:3px 9px;border-radius:20px;border:1px solid var(--border2);color:var(--muted)}
+.badge.on{color:var(--green);border-color:rgba(45,212,167,.5)}
+.note{margin-left:auto;font-size:11px;color:var(--dim)}
+
+/* ---------- layout ---------- */
+main{flex:1;display:grid;grid-template-columns:1fr 400px;min-height:0}
+#chartWrap{position:relative;border-right:1px solid var(--border)}
+#chart{position:absolute;inset:0}
+.placeholder{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:var(--dim);font-size:12px;letter-spacing:.4px}
+
+/* ============================================================
+   RIGHT COLUMN — the redesigned panel
+   ============================================================ */
+aside{background:linear-gradient(180deg,var(--panel),#0b0f16);overflow-y:auto;scrollbar-width:thin;scrollbar-color:var(--border2) transparent}
+aside::-webkit-scrollbar{width:8px}
+aside::-webkit-scrollbar-thumb{background:var(--border2);border-radius:4px}
+
+/* sidebar top: title + tabs */
+.side-top{position:sticky;top:0;z-index:10;background:linear-gradient(180deg,var(--panel) 85%,transparent);padding:14px 14px 8px}
+.side-title{display:flex;align-items:baseline;gap:8px;margin-bottom:10px}
+.side-title h2{font-size:13px;font-weight:700;letter-spacing:1.6px;text-transform:uppercase}
+.side-title .live{display:flex;align-items:center;gap:5px;font-size:10px;color:var(--green);letter-spacing:.5px}
+.live-dot{width:7px;height:7px;border-radius:50%;background:var(--green);box-shadow:0 0 8px var(--green);animation:pulse 1.6s infinite}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.35}}
+.side-title .n{margin-left:auto;font-family:var(--mono);font-size:11px;color:var(--muted)}
+
+.tabs{display:flex;gap:4px;background:var(--panel2);border:1px solid var(--border);border-radius:10px;padding:3px}
+.tab{flex:1;text-align:center;font-size:11.5px;font-weight:600;letter-spacing:.4px;color:var(--muted);padding:6px 0;border-radius:7px;cursor:pointer;transition:.18s}
+.tab:hover{color:var(--text)}
+.tab.active{background:linear-gradient(180deg,var(--panel3),#141a24);color:var(--text);box-shadow:inset 0 1px 0 rgba(255,255,255,.04), 0 2px 8px rgba(0,0,0,.35)}
+.tab .cnt{font-family:var(--mono);font-size:10px;color:var(--dim);margin-left:4px}
+.tab.active .cnt{color:var(--accent)}
+
+.pad{padding:4px 14px 16px}
+
+/* ---------- structure card ---------- */
+.card{background:linear-gradient(180deg,var(--panel2),var(--panel));border:1px solid var(--border);border-radius:14px;padding:14px;margin-bottom:12px;box-shadow:var(--shadow);position:relative;overflow:hidden}
+.card::before{content:"";position:absolute;inset:0 0 auto 0;height:1px;background:linear-gradient(90deg,transparent,rgba(255,255,255,.07),transparent)}
+.card-h{display:flex;align-items:center;gap:7px;margin-bottom:12px}
+.card-h .ic{width:18px;height:18px;border-radius:5px;display:grid;place-items:center;font-size:10px;background:rgba(57,208,195,.1);border:1px solid rgba(57,208,195,.25)}
+.card-h h3{font-size:10.5px;font-weight:700;letter-spacing:1.4px;text-transform:uppercase;color:var(--muted)}
+.card-h .sub{margin-left:auto;font-size:10.5px;color:var(--dim);font-family:var(--mono)}
+
+.trend-row{display:flex;align-items:center;gap:8px;margin-bottom:12px}
+.trend-pill{display:inline-flex;align-items:center;gap:6px;font-weight:800;font-size:12.5px;letter-spacing:.8px;padding:5px 13px;border-radius:20px}
+.trend-pill.bullish{color:var(--green);background:var(--green-dim);border:1px solid rgba(45,212,167,.4);box-shadow:0 0 14px rgba(45,212,167,.12)}
+.trend-pill.bearish{color:var(--red);background:var(--red-dim);border:1px solid rgba(242,95,92,.4)}
+.trend-pill.neutral{color:var(--muted);background:rgba(135,146,166,.08);border:1px solid var(--border2)}
+.trend-note{font-size:11px;color:var(--dim)}
+.trend-note b{color:var(--text);font-weight:600}
+
+/* dealing-range bar */
+.dr{margin:4px 0 10px}
+.dr-bar{position:relative;height:16px;border-radius:8px;overflow:visible;
+  background:linear-gradient(90deg, rgba(45,212,167,.32) 0 50%, rgba(242,95,92,.32) 50% 100%);
+  border:1px solid var(--border2)}
+.dr-eq{position:absolute;left:50%;top:-3px;bottom:-3px;width:1px;background:rgba(255,255,255,.35)}
+.dr-eq::after{content:"EQ";position:absolute;top:-14px;left:50%;transform:translateX(-50%);font-size:8.5px;letter-spacing:.8px;color:var(--dim)}
+.dr-marker{position:absolute;top:-4px;bottom:-4px;width:2.5px;border-radius:2px;background:#fff;box-shadow:0 0 10px rgba(255,255,255,.8);transition:left .6s cubic-bezier(.2,.8,.2,1)}
+.dr-marker::after{content:"";position:absolute;top:-5px;left:50%;transform:translateX(-50%);border:4px solid transparent;border-top-color:#fff}
+.dr-labels{display:flex;justify-content:space-between;font-size:9px;letter-spacing:1.2px;color:var(--dim);margin-top:5px}
+.dr-labels .pos{font-family:var(--mono);color:var(--accent)}
+
+.kv{display:flex;justify-content:space-between;align-items:center;padding:4.5px 0;border-bottom:1px dashed rgba(255,255,255,.04);font-size:12px}
+.kv:last-child{border-bottom:none}
+.kv span{color:var(--muted)}
+.kv b{font-weight:600;font-family:var(--mono);font-size:11.5px}
+.kv b.pos{color:var(--accent)} .kv b.neg{color:var(--red)} .kv b.hl{color:var(--amber)}
+
+/* ---------- setup card ---------- */
+.setup{background:linear-gradient(180deg,var(--panel2),var(--panel));border:1px solid var(--border);border-radius:16px;margin-bottom:14px;box-shadow:var(--shadow);overflow:hidden;animation:rise .4s cubic-bezier(.2,.8,.2,1)}
+@keyframes rise{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
+.setup::before{content:"";display:block;height:3px;background:linear-gradient(90deg,var(--green),transparent)}
+.setup.short::before{background:linear-gradient(90deg,var(--red),transparent)}
+.setup.wait::before{background:linear-gradient(90deg,var(--amber),transparent)}
+.setup-inner{padding:13px 14px 12px}
+
+.s-head{display:flex;align-items:center;gap:9px;margin-bottom:11px}
+.dir-ic{width:30px;height:30px;border-radius:9px;display:grid;place-items:center;font-size:13px;font-weight:800}
+.dir-ic.long{background:var(--green-dim);color:var(--green);border:1px solid rgba(45,212,167,.35)}
+.dir-ic.short{background:var(--red-dim);color:var(--red);border:1px solid rgba(242,95,92,.35)}
+.s-dir{font-weight:800;font-size:14px;letter-spacing:.6px}
+.s-dir.long{color:var(--green)} .s-dir.short{color:var(--red)}
+.s-meta{font-size:10.5px;color:var(--muted);margin-top:1px}
+.rr-pill{margin-left:auto;font-family:var(--mono);font-size:11.5px;font-weight:700;color:var(--blue);background:rgba(108,158,255,.1);border:1px solid rgba(108,158,255,.3);padding:3px 9px;border-radius:8px}
+
+.verdict-row{display:flex;align-items:center;gap:12px;margin-bottom:12px}
+.verdict{font-weight:800;font-size:13px;letter-spacing:1.6px;padding:7px 18px;border-radius:10px;position:relative}
+.verdict.BUY{color:#052e25;background:linear-gradient(135deg,var(--green),#1fa98f);box-shadow:0 0 18px rgba(45,212,167,.35);animation:glow 2.4s infinite}
+.verdict.SELL{color:#3a0e0d;background:linear-gradient(135deg,var(--red),#d94a47);box-shadow:0 0 18px rgba(242,95,92,.3)}
+.verdict.WAIT{color:#3a2c05;background:linear-gradient(135deg,var(--amber),#dfa32b)}
+.verdict.AVOID{color:#111;background:linear-gradient(135deg,#9aa4b5,#7c8698)}
+@keyframes glow{0%,100%{box-shadow:0 0 14px rgba(45,212,167,.25)}50%{box-shadow:0 0 26px rgba(45,212,167,.5)}}
+.v-sub{font-size:10px;color:var(--dim);line-height:1.5}
+.v-sub b{color:var(--text)}
+
+/* score ring */
+.ring{width:52px;height:52px;flex:none;transform:rotate(-90deg)}
+.ring circle{fill:none;stroke-width:4;stroke-linecap:round}
+.ring .bg{stroke:rgba(255,255,255,.06)}
+.ring .val{transition:stroke-dashoffset 1s cubic-bezier(.2,.8,.2,1)}
+.ring-wrap{position:relative;width:52px;height:52px;flex:none}
+.ring-num{position:absolute;inset:0;display:grid;place-items:center;font-family:var(--mono);font-weight:700;font-size:14px}
+.ring-lbl{position:absolute;bottom:-14px;left:0;right:0;text-align:center;font-size:8px;letter-spacing:1px;color:var(--dim)}
+
+/* trade ladder */
+.ladder{margin:2px 0 12px}
+.ladder-bar{position:relative;height:14px;border-radius:7px;display:flex;overflow:visible;border:1px solid var(--border2)}
+.l-risk{background:linear-gradient(180deg,rgba(242,95,92,.45),rgba(242,95,92,.2));border-radius:7px 0 0 7px;position:relative}
+.l-reward{background:linear-gradient(180deg,rgba(45,212,167,.4),rgba(45,212,167,.16));border-radius:0 7px 7px 0;position:relative}
+.l-tick{position:absolute;top:-4px;bottom:-4px;width:2px;background:#fff;box-shadow:0 0 6px rgba(255,255,255,.7);border-radius:2px}
+.l-tick.entry{background:var(--accent);box-shadow:0 0 8px var(--accent)}
+.l-tick::after{content:"";position:absolute;top:-4px;left:50%;transform:translateX(-50%);border:3.5px solid transparent}
+.l-tick.sl::after{border-bottom-color:var(--red)}
+.l-tick.tp::after{border-top-color:var(--green)}
+.l-tick.entry::after{border-top-color:var(--accent);border-bottom-color:transparent}
+.l-labels{display:flex;justify-content:space-between;margin-top:6px;font-family:var(--mono);font-size:10px}
+.l-labels .lbl{display:flex;flex-direction:column;gap:1px}
+.l-labels .k{font-size:8.5px;letter-spacing:1px;color:var(--dim);font-family:"Segoe UI",sans-serif}
+.l-labels .sl{color:var(--red)} .l-labels .tp{color:var(--green);text-align:right} .l-labels .en{color:var(--accent)}
+.l-rr{position:absolute;left:50%;top:-19px;transform:translateX(-50%);font-size:9px;letter-spacing:.8px;color:var(--dim)}
+.l-rr b{color:var(--text)}
+
+.prices{display:grid;grid-template-columns:repeat(3,1fr);gap:7px;margin-bottom:11px}
+.p-box{background:rgba(255,255,255,.025);border:1px solid var(--border);border-radius:9px;padding:7px 4px;text-align:center}
+.p-box .k{font-size:8.5px;letter-spacing:1.2px;color:var(--dim);text-transform:uppercase}
+.p-box .v{font-family:var(--mono);font-weight:600;font-size:12px;margin-top:2px}
+.p-box .d{font-size:9px;color:var(--dim);font-family:var(--mono)}
+.p-box.stop .v{color:var(--red)} .p-box.target .v{color:var(--green)} .p-box.entry-b .v{color:var(--accent)}
+
+/* ML */
+.ml-row{margin-bottom:10px}
+.ml-top{display:flex;justify-content:space-between;font-size:11px;color:var(--muted);margin-bottom:4px}
+.ml-top b{color:var(--text);font-family:var(--mono)}
+.ml-bar{height:6px;border-radius:3px;background:#0a0e15;border:1px solid var(--border);overflow:hidden;position:relative}
+.ml-fill{height:100%;border-radius:3px;background:linear-gradient(90deg,var(--red),var(--amber) 50%,var(--green));box-shadow:0 0 8px rgba(45,212,167,.25);transition:width 1s cubic-bezier(.2,.8,.2,1)}
+
+.chips{display:flex;flex-wrap:wrap;gap:5px;margin-bottom:4px}
+.chip{display:inline-flex;align-items:center;gap:4px;font-size:10px;padding:3px 9px;border-radius:12px;background:rgba(57,208,195,.07);border:1px solid rgba(57,208,195,.22);color:var(--accent)}
+.chip::before{content:"✓";font-size:8.5px;opacity:.8}
+
+/* AI analyst box */
+.ai-box{margin-top:10px;border-radius:11px;overflow:hidden;border:1px solid rgba(157,123,255,.28);background:linear-gradient(180deg,rgba(157,123,255,.07),rgba(157,123,255,.02))}
+.ai-head{display:flex;align-items:center;gap:7px;padding:8px 11px;background:rgba(157,123,255,.08);border-bottom:1px solid rgba(157,123,255,.18)}
+.ai-head .spark{width:16px;height:16px;border-radius:5px;background:rgba(157,123,255,.15);display:grid;place-items:center;font-size:9px;color:var(--violet)}
+.ai-head .t{font-size:9.5px;font-weight:700;letter-spacing:1.4px;color:var(--violet)}
+.ai-head .model{margin-left:auto;font-family:var(--mono);font-size:9.5px;color:var(--dim)}
+.ai-body{padding:9px 11px 10px}
+.ai-verdict-line{display:flex;gap:8px;font-size:10.5px;color:var(--muted);margin-bottom:6px}
+.ai-verdict-line b{color:var(--text)}
+.ai-narrative{font-size:12px;color:#c6cfe0;line-height:1.55}
+.ai-inval{display:flex;gap:6px;margin-top:8px;font-size:10.5px;color:var(--amber);background:var(--amber-dim);border:1px solid rgba(245,184,61,.2);border-radius:7px;padding:6px 8px}
+.ai-inval .k{font-weight:700;letter-spacing:.5px;flex:none}
+.ai-concerns{margin:8px 0 0;padding-left:2px;list-style:none}
+.ai-concerns li{display:flex;gap:6px;font-size:10.5px;color:var(--muted);padding:2px 0}
+.ai-concerns li::before{content:"!";flex:none;width:13px;height:13px;border-radius:50%;background:rgba(245,184,61,.12);color:var(--amber);font-size:9px;display:grid;place-items:center;font-weight:700;margin-top:1px}
+
+.s-foot{display:flex;justify-content:space-between;margin-top:10px;padding-top:9px;border-top:1px dashed rgba(255,255,255,.05);font-size:10px;color:var(--dim)}
+.s-foot .mono{font-family:var(--mono)}
+
+/* journal tab */
+.j-row{display:flex;align-items:center;gap:9px;padding:9px 10px;border:1px solid var(--border);border-radius:10px;margin-bottom:7px;background:rgba(255,255,255,.015)}
+.j-out{width:9px;height:9px;border-radius:50%;flex:none}
+.j-out.win{background:var(--green);box-shadow:0 0 6px var(--green)} .j-out.loss{background:var(--red)} .j-out.open{background:var(--dim)}
+.j-sym{font-weight:700;font-size:12px;min-width:74px}
+.j-dir{font-size:10.5px;min-width:42px}
+.j-dir.long{color:var(--green)} .j-dir.short{color:var(--red)}
+.j-ml{margin-left:auto;font-family:var(--mono);font-size:10.5px;color:var(--muted)}
+.j-when{font-size:10px;color:var(--dim);min-width:64px;text-align:right}
+
+.hint{font-size:10.5px;color:var(--dim);text-align:center;padding:8px 0 2px}
+@media (max-width:1100px){main{grid-template-columns:1fr 380px}}
+</style>
+</head>
+<body>
+
+<header>
+  <div class="brand">⚡ AI Trader <span>SMC · Liquidity · Hybrid AI · UI v2.2-mock</span></div>
+  <span class="badge on">ML: ready · 0.2d</span>
+  <span class="badge">LLM: MiniMax-M3</span>
+  <span class="note">MOCK for design review — sample data, right column only</span>
+</header>
+
+<main>
+  <section id="chartWrap"><div id="chart"></div></section>
+
+  <aside>
+    <div class="side-top">
+      <div class="side-title">
+        <h2>Trade Setups</h2>
+        <span class="live"><span class="live-dot"></span>LIVE</span>
+        <span class="n">2 active · 1 filtered</span>
+      </div>
+      <div class="tabs">
+        <div class="tab active" id="tabSetups" onclick="showTab('setups')">Setups<span class="cnt">3</span></div>
+        <div class="tab" id="tabJournal" onclick="showTab('journal')">Journal<span class="cnt">142</span></div>
+      </div>
+    </div>
+
+    <div id="viewSetups" class="pad">
+
+      <!-- market structure -->
+      <div class="card">
+        <div class="card-h"><span class="ic">◈</span><h3>Market Structure</h3><span class="sub">EURUSD · H1</span></div>
+        <div class="trend-row">
+          <span class="trend-pill bullish">▲ BULLISH</span>
+          <span class="trend-note">last: <b>BOS</b> @ 1.08412 · 6 bars ago</span>
+        </div>
+        <div class="dr">
+          <div class="dr-bar">
+            <div class="dr-eq"></div>
+            <div class="dr-marker" style="left:28%"></div>
+          </div>
+          <div class="dr-labels"><span>DISCOUNT</span><span class="pos">28% · discount</span><span>PREMIUM</span></div>
+        </div>
+        <div class="kv"><span>Dealing range</span><b>1.08210 – 1.08490</b></div>
+        <div class="kv"><span>Equilibrium (50%)</span><b>1.08350</b></div>
+        <div class="kv"><span>ATR(14)</span><b>8.2 pips</b></div>
+        <div class="kv"><span>Fresh OB / FVG</span><b>3 / 5</b></div>
+        <div class="kv"><span>Last sweep</span><b class="hl">sell-side · 4 bars ago</b></div>
+      </div>
+
+      <!-- SETUP 1 : LONG / BUY -->
+      <div class="setup">
+        <div class="setup-inner">
+          <div class="s-head">
+            <div class="dir-ic long">▲</div>
+            <div><div class="s-dir long">LONG</div><div class="s-meta">EURUSD · H1 · OB entry</div></div>
+            <span class="rr-pill">R:R 1:2.4</span>
+          </div>
+          <div class="verdict-row">
+            <span class="verdict BUY">BUY</span>
+            <div class="v-sub">hybrid <b>72</b> · aligned<br>threshold 60 · ML+LLM</div>
+            <div class="ring-wrap" style="margin-left:auto">
+              <svg class="ring" viewBox="0 0 44 44">
+                <circle class="bg" cx="22" cy="22" r="18"></circle>
+                <circle class="val" cx="22" cy="22" r="18" stroke="#2dd4a7" stroke-dasharray="113.1" stroke-dashoffset="31.7"></circle>
+              </svg>
+              <div class="ring-num">72</div><div class="ring-lbl">SCORE</div>
+            </div>
+          </div>
+
+          <div class="ladder">
+            <span class="l-rr">risk <b style="color:var(--red)">29%</b> · reward <b style="color:var(--green)">71%</b></span>
+            <div class="ladder-bar" id="lad1"></div>
+            <div class="l-labels" id="lab1"></div>
+          </div>
+
+          <div class="prices">
+            <div class="p-box stop"><div class="k">Stop</div><div class="v">1.08241</div><div class="d">−16.5 pips</div></div>
+            <div class="p-box entry-b"><div class="k">Entry</div><div class="v">1.08406</div><div class="d">OB top</div></div>
+            <div class="p-box target"><div class="k">Target</div><div class="v">1.08801</div><div class="d">+39.5 pips</div></div>
+          </div>
+
+          <div class="ml-row">
+            <div class="ml-top"><span>ML win-probability</span><b>68%</b></div>
+            <div class="ml-bar"><div class="ml-fill" style="width:68%"></div></div>
+          </div>
+
+          <div class="chips">
+            <span class="chip">structure aligned</span>
+            <span class="chip">sell-side sweep · 4 bars</span>
+            <span class="chip">discount entry (28%)</span>
+            <span class="chip">fresh order block</span>
+          </div>
+
+          <div class="ai-box">
+            <div class="ai-head"><span class="spark">✦</span><span class="t">AI ANALYST</span><span class="model">MiniMax-M3</span></div>
+            <div class="ai-body">
+              <div class="ai-verdict-line">bias <b>bullish</b> · conviction <b>74/100</b> · agrees with setup</div>
+              <div class="ai-narrative">Price swept sell-side liquidity at 1.08238 and reclaimed the range within four bars — a classic spring. Structure remains bullish after the BOS at 1.08412, and the unmitigated OB at 1.08406 sits in the lower half of the dealing range. Expect rotation toward the equal-highs pool at 1.08800 while the swept low holds.</div>
+              <div class="ai-inval"><span class="k">INVALIDATION</span><span>accepting closes below 1.08210 (range low + swept level)</span></div>
+              <ul class="ai-concerns">
+                <li>London open volatility may extend the sweep before entry fills</li>
+                <li>Target sits at a daily equal-highs pool — partial profit sensible</li>
+              </ul>
+            </div>
+          </div>
+
+          <div class="s-foot"><span>formed 14:32 · 4 bars ago</span><span class="mono">journal #1187</span></div>
+        </div>
+      </div>
+
+      <!-- SETUP 2 : SHORT / WAIT -->
+      <div class="setup short">
+        <div class="setup-inner">
+          <div class="s-head">
+            <div class="dir-ic short">▼</div>
+            <div><div class="s-dir short">SHORT</div><div class="s-meta">XAUUSD · M15 · FVG entry</div></div>
+            <span class="rr-pill">R:R 1:3.1</span>
+          </div>
+          <div class="verdict-row">
+            <span class="verdict WAIT">WAIT</span>
+            <div class="v-sub">hybrid <b>48</b> · aligned<br>below threshold 60</div>
+            <div class="ring-wrap" style="margin-left:auto">
+              <svg class="ring" viewBox="0 0 44 44">
+                <circle class="bg" cx="22" cy="22" r="18"></circle>
+                <circle class="val" cx="22" cy="22" r="18" stroke="#f5b83d" stroke-dasharray="113.1" stroke-dashoffset="58.8"></circle>
+              </svg>
+              <div class="ring-num">48</div><div class="ring-lbl">SCORE</div>
+            </div>
+          </div>
+
+          <div class="ladder">
+            <span class="l-rr">risk <b style="color:var(--red)">24%</b> · reward <b style="color:var(--green)">76%</b></span>
+            <div class="ladder-bar" id="lad2"></div>
+            <div class="l-labels" id="lab2"></div>
+          </div>
+
+          <div class="prices">
+            <div class="p-box stop"><div class="k">Stop</div><div class="v">2358.42</div><div class="d">−$7.9</div></div>
+            <div class="p-box entry-b"><div class="k">Entry</div><div class="v">2350.55</div><div class="d">FVG mid</div></div>
+            <div class="p-box target"><div class="k">Target</div><div class="v">2326.06</div><div class="d">+$24.5</div></div>
+          </div>
+
+          <div class="ml-row">
+            <div class="ml-top"><span>ML win-probability</span><b>42%</b></div>
+            <div class="ml-bar"><div class="ml-fill" style="width:42%"></div></div>
+          </div>
+
+          <div class="chips">
+            <span class="chip">structure aligned</span>
+            <span class="chip">premium entry (71%)</span>
+            <span class="chip">fresh FVG</span>
+          </div>
+
+          <div class="ai-box">
+            <div class="ai-head"><span class="spark">✦</span><span class="t">AI ANALYST</span><span class="model">MiniMax-M3</span></div>
+            <div class="ai-body">
+              <div class="ai-verdict-line">bias <b>bearish</b> · conviction <b>55/100</b> · agrees with setup</div>
+              <div class="ai-narrative">Bearish FVG left after the sweep of 2358.40 offers a premium entry, but gold's momentum into the NY session is fading and the sweep was shallow relative to ATR. Probability of a clean rotation to 2326 is moderate — wait for a rejection wick inside the gap before committing size.</div>
+              <div class="ai-inval"><span class="k">INVALIDATION</span><span>accepting closes above 2358.90 (sweep high)</span></div>
+            </div>
+          </div>
+
+          <div class="s-foot"><span>formed 13:58 · 21 bars ago</span><span class="mono">journal #1179</span></div>
+        </div>
+      </div>
+
+      <!-- SETUP 3 : LONG / AVOID (LLM contradicts) -->
+      <div class="setup">
+        <div class="setup-inner">
+          <div class="s-head">
+            <div class="dir-ic long">▲</div>
+            <div><div class="s-dir long">LONG</div><div class="s-meta">GBPJPY · H4 · OB entry</div></div>
+            <span class="rr-pill">R:R 1:1.8</span>
+          </div>
+          <div class="verdict-row">
+            <span class="verdict AVOID">AVOID</span>
+            <div class="v-sub">LLM <b style="color:var(--red)">contradicts</b><br>score penalized −20</div>
+            <div class="ring-wrap" style="margin-left:auto">
+              <svg class="ring" viewBox="0 0 44 44">
+                <circle class="bg" cx="22" cy="22" r="18"></circle>
+                <circle class="val" cx="22" cy="22" r="18" stroke="#9aa4b5" stroke-dasharray="113.1" stroke-dashoffset="81.4"></circle>
+              </svg>
+              <div class="ring-num">31</div><div class="ring-lbl">SCORE</div>
+            </div>
+          </div>
+
+          <div class="ladder">
+            <span class="l-rr">risk <b style="color:var(--red)">36%</b> · reward <b style="color:var(--green)">64%</b></span>
+            <div class="ladder-bar" id="lad3"></div>
+            <div class="l-labels" id="lab3"></div>
+          </div>
+
+          <div class="prices">
+            <div class="p-box stop"><div class="k">Stop</div><div class="v">197.412</div><div class="d">−118 pips</div></div>
+            <div class="p-box entry-b"><div class="k">Entry</div><div class="v">196.230</div><div class="d">OB top</div></div>
+            <div class="p-box target"><div class="k">Target</div><div class="v">198.354</div><div class="d">+212 pips</div></div>
+          </div>
+
+          <div class="ml-row">
+            <div class="ml-top"><span>ML win-probability</span><b>55%</b></div>
+            <div class="ml-bar"><div class="ml-fill" style="width:55%"></div></div>
+          </div>
+
+          <div class="chips">
+            <span class="chip">sell-side sweep · 12 bars</span>
+            <span class="chip">fresh order block</span>
+          </div>
+
+          <div class="ai-box">
+            <div class="ai-head"><span class="spark">✦</span><span class="t">AI ANALYST</span><span class="model">MiniMax-M3</span></div>
+            <div class="ai-body">
+              <div class="ai-verdict-line">bias <b style="color:var(--red)">bearish</b> · conviction <b>62/100</b> · <span style="color:var(--red)">contradicts the long</span></div>
+              <div class="ai-narrative">The H4 OB sits below a bearish CHoCH and the sweep it references was itself inside a larger premium array. The ML score is fair on structure, but the higher-timeframe flow argues distribution, not accumulation — standing aside is the professional move here.</div>
+              <div class="ai-inval"><span class="k">NOTE</span><span>re-evaluate if price reclaims 196.900 with a H4 close</span></div>
+            </div>
+          </div>
+
+          <div class="s-foot"><span>formed 12:15 · 68 bars ago</span><span class="mono">journal #1164</span></div>
+        </div>
+      </div>
+
+      <div class="hint">Showing setups with structure + sweep/zone confluence. Filtered and low-quality signals are excluded by design.</div>
+    </div>
+
+    <!-- JOURNAL TAB (sample) -->
+    <div id="viewJournal" class="pad" style="display:none">
+      <div class="card">
+        <div class="card-h"><span class="ic">▤</span><h3>Setups Journal</h3><span class="sub">142 logged</span></div>
+        <div class="j-row"><span class="j-out win"></span><span class="j-sym">EURUSD</span><span class="j-dir long">▲ long</span><span class="j-ml">ML 66% · BUY</span><span class="j-when">09:15</span></div>
+        <div class="j-row"><span class="j-out loss"></span><span class="j-sym">XAUUSD</span><span class="j-dir short">▼ short</span><span class="j-ml">ML 38% · WAIT</span><span class="j-when">08:40</span></div>
+        <div class="j-row"><span class="j-out win"></span><span class="j-sym">GBPUSD</span><span class="j-dir long">▲ long</span><span class="j-ml">ML 71% · BUY</span><span class="j-when">08:10</span></div>
+        <div class="j-row"><span class="j-out open"></span><span class="j-sym">USDJPY</span><span class="j-dir short">▼ short</span><span class="j-ml">ML 51% · SELL</span><span class="j-when">07:55</span></div>
+        <div class="j-row"><span class="j-out win"></span><span class="j-sym">EURUSD</span><span class="j-dir short">▼ short</span><span class="j-ml">ML 44% · SELL</span><span class="j-when">07:30</span></div>
+        <div class="j-row"><span class="j-out loss"></span><span class="j-sym">GBPJPY</span><span class="j-dir long">▲ long</span><span class="j-ml">ML 29% · WAIT</span><span class="j-when">06:45</span></div>
+        <div class="hint">Full journal: <span style="font-family:var(--mono)">python -m app.main history</span></div>
+      </div>
+      <div class="card">
+        <div class="card-h"><span class="ic">◎</span><h3>ML Calibration</h3><span class="sub">by bucket</span></div>
+        <div class="kv"><span>ML 50–60% · win rate</span><b class="pos">64% (n=22)</b></div>
+        <div class="kv"><span>ML 40–50% · win rate</span><b>51% (n=41)</b></div>
+        <div class="kv"><span>ML 30–40% · win rate</span><b>33% (n=38)</b></div>
+        <div class="kv"><span>ML 20–30% · win rate</span><b class="neg">18% (n=27)</b></div>
+        <div class="hint">Buckets rise monotonically → the model ranks correctly. ✓</div>
+      </div>
+    </div>
+  </aside>
+</main>
+
+<script>
+// ---- chart placeholder with real candles so the mock feels live ----
+const chart = LightweightCharts.createChart(document.getElementById('chart'), {
+  layout:{background:{type:'solid',color:'#07090f'},textColor:'#5b657a'},
+  grid:{vertLines:{color:'#10141c'},horzLines:{color:'#10141c'}},
+  rightPriceScale:{borderColor:'#1e2530'},
+  timeScale:{borderColor:'#1e2530',timeVisible:true},
+  crosshair:{mode:1},
+});
+const series = chart.addCandlestickSeries({
+  upColor:'#2dd4a7',downColor:'#f25f5c',borderVisible:false,
+  wickUpColor:'#2dd4a7',wickDownColor:'#f25f5c',
+  priceFormat:{type:'price',precision:5,minMove:0.00001},
+});
+let price = 1.0835; const data = []; let t = Math.floor(Date.now()/1000) - 900*60;
+for (let i=0;i<600;i++){
+  const o = price; price += (Math.random()-0.485)*0.0009;
+  const c = price, h = Math.max(o,c)+Math.random()*0.0004, l = Math.min(o,c)-Math.random()*0.0004;
+  data.push({time:t, open:o, high:h, low:l, close:c}); t += 60;
+}
+series.setData(data);
+new ResizeObserver(()=>chart.applyOptions({width:document.getElementById('chartWrap').clientWidth,height:document.getElementById('chartWrap').clientHeight})).observe(document.getElementById('chartWrap'));
+
+// ---- trade ladders (computed like the real engine) ----
+function ladder(barId, labId, entry, sl, tp, digits){
+  const lo = Math.min(sl, tp), hi = Math.max(sl, tp);
+  const span = hi - lo;
+  const pos = p => ((p - lo) / span * 100);
+  const lossPct = Math.abs(entry - sl) / span * 100;
+  const long = tp > sl;
+  const bar = document.getElementById(barId);
+  bar.innerHTML = long
+    ? `<div class="l-risk" style="width:${lossPct}%"></div><div class="l-reward" style="width:${100-lossPct}%"></div>
+       <div class="l-tick sl" style="left:0%"></div><div class="l-tick entry" style="left:${pos(entry)}%"></div><div class="l-tick tp" style="left:100%"></div>`
+    : `<div class="l-risk" style="width:${lossPct}%;margin-left:auto"></div><div class="l-reward" style="width:${100-lossPct}%"></div>
+       <div class="l-tick tp" style="left:0%"></div><div class="l-tick entry" style="left:${pos(entry)}%"></div><div class="l-tick sl" style="left:100%"></div>`;
+  const f = v => v.toFixed(digits);
+  document.getElementById(labId).innerHTML = long
+    ? `<div class="lbl"><span class="k">STOP</span><span class="sl">${f(sl)}</span></div>
+       <div class="lbl" style="align-items:center"><span class="k">ENTRY</span><span class="en">${f(entry)}</span></div>
+       <div class="lbl" style="align-items:flex-end"><span class="k">TARGET</span><span class="tp">${f(tp)}</span></div>`
+    : `<div class="lbl"><span class="k">TARGET</span><span class="tp">${f(tp)}</span></div>
+       <div class="lbl" style="align-items:center"><span class="k">ENTRY</span><span class="en">${f(entry)}</span></div>
+       <div class="lbl" style="align-items:flex-end"><span class="k">STOP</span><span class="sl">${f(sl)}</span></div>`;
+}
+ladder('lad1','lab1', 1.08406, 1.08241, 1.08801, 5);
+ladder('lad2','lab2', 2350.55, 2358.42, 2326.06, 2);
+ladder('lad3','lab3', 196.230, 197.412, 198.354, 3);
+
+// ---- tabs ----
+function showTab(which){
+  document.getElementById('viewSetups').style.display = which==='setups' ? '' : 'none';
+  document.getElementById('viewJournal').style.display = which==='journal' ? '' : 'none';
+  document.getElementById('tabSetups').classList.toggle('active', which==='setups');
+  document.getElementById('tabJournal').classList.toggle('active', which==='journal');
+}
+</script>
+</body>
+</html>

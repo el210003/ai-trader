@@ -1,0 +1,112 @@
+# ============================================================
+# AI Trader configuration
+# ============================================================
+
+mt5:
+  # Optional: full path to your MT5 terminal. Leave null to attach to any running terminal.
+  terminal_path: null        # e.g. "C:\\Program Files\\MetaTrader 5\\terminal64.exe"
+  login: null                # integer account number, null = use already-logged-in terminal
+  password: null
+  server: null
+  timeout: 60000
+
+data:
+  bars: 3000                 # history to pull per symbol/timeframe
+
+symbols:
+  - EURUSD
+  - GBPUSD
+  - USDJPY
+  - AUDUSD
+  - USDCHF
+  - USDCAD
+  - NZDUSD
+
+timeframes:
+  - M15
+  - H1
+  - H4
+
+# When `discover.enabled` is true, the CLI ignores the `symbols:` list above
+# and queries MT5 at runtime for every symbol currently visible / tradeable
+# in Market Watch.  You can also pass `--all-symbols` on any command to
+# force discovery on the fly without editing this file.
+#
+# Group examples:
+#   "*"        -> everything
+#   "*USD*"    -> symbols whose name contains USD
+#   "Forex\\*" -> everything under a "Forex" path
+#   "Metals*"  -> gold / silver
+discover:
+  enabled: true
+  group: "*"
+  only_tradeable: true      # skip symbols whose trade_mode == DISABLED
+  only_visible: true        # skip symbols not currently in Market Watch
+  max_count: 200            # safety cap (some brokers expose thousands)
+  cache_path: data/discovered_symbols.json  # persisted so the dashboard
+                                            # can load without MT5 open
+
+storage:
+  path: data/trader.db
+
+smc:
+  swing_lookback: 3          # bars left/right for pivot detection
+  eq_tolerance_pct: 0.0006   # tolerance (fraction of price) for equal highs/lows clustering
+  ob_max_age_bars: 300       # max age of a fresh (unmitigated) order block
+  fvg_max_age_bars: 200      # max age of a fresh (unfilled) fair value gap
+  sweep_lookback_bars: 30    # a sweep within this many bars counts as "recent"
+  min_rr: 1.5                # setups below this risk:reward are discarded
+  default_rr: 2.0            # fallback RR when no liquidity target gives min_rr
+  max_rr: 5.0
+  sl_buffer_atr: 0.25        # stop-loss buffer beyond zone/sweep wick, in ATR units
+  min_risk_atr: 0.75         # stop must be at least this far from entry (ATR units)
+  atr_period: 14
+
+ai:
+  ml:
+    model_path: data/models/setup_classifier.joblib
+    label_horizon_bars: 96   # forward window to label TP-before-SL outcomes
+    label_step: 4            # step between historical setup samples during training
+    warmup_bars: 300         # history required before generating training setups
+    min_train_samples: 60
+    auto_retrain:            # model-drift safety net (see docs/ml-method.md)
+      enabled: true
+      max_age_days: 7        # model older than this is considered stale
+      on_refresh: warn       # warn    = dashboard badge + Retrain button (manual click)
+                             # auto    = stale model is retrained automatically on refresh
+                             # manual  = no warning, retrain via CLI only
+  llm:
+    enabled: true
+    # Any OpenAI-compatible endpoint works:
+    #   OpenAI:    https://api.openai.com/v1        model: gpt-4o-mini
+    #   Ollama:    http://localhost:11434/v1        model: llama3.1
+    #   LM Studio: http://localhost:1234/v1         model: (loaded model)
+    base_url: https://api.minimax.io/v1 
+    api_key_env: MINIMAX_API_KEY
+    model : MiniMax-M3
+    temperature: 0.2
+    timeout: 45
+    # Speed controls for bar-close bursts (LLM calls only happen for setups
+    # whose ML win-probability clears the gate; identical setups within the TTL
+    # reuse the cached narrative instead of re-spending tokens):
+    min_ml_prob: 0.30        # skip LLM when ML win-probability < 30%
+    cache_ttl: 900           # reuse cached LLM narrative for 15 min
+  hybrid:
+    ml_weight: 0.6           # weight of ML win-probability in final score
+    llm_weight: 0.4          # weight of LLM confidence in final score
+    buy_threshold: 60        # final score needed to emit BUY/SELL (else WAIT)
+
+dashboard:
+  host: 0.0.0.0
+  port: 8000
+  refresh_seconds: 60        # auto-refresh interval in the web UI (view only)
+  # Auto-pipeline: run the FULL ingest+analyze cycle from MT5 every N seconds
+  # while serve is open (0 = off; then only "Run analysis" clicks pull data).
+  # Example: 900 = every 15 min. CLI shortcut:  serve.bat --auto 900
+  auto_run_interval: 0
+  # Bar-close watcher (RECOMMENDED over the timer): polls MT5 cheaply and
+  # analyzes each pair the moment its bar CLOSES, using only confirmed bars
+  # (matches how the ML model was trained). Overrides auto_run_interval.
+  # CLI shortcut:  serve.bat --on-bar-close
+  bar_close_watcher: true
+  bar_poll_seconds: 10       # how often to peek MT5 for a new bar
