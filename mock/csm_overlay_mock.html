@@ -1,0 +1,221 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MOCK — CSM thin strip overlay v3.6 (symbol + number only)</title>
+<script src="https://unpkg.com/lightweight-charts@4.1.3/dist/lightweight-charts.standalone.production.js"></script>
+<style>
+:root{
+  --bg:#07090f; --panel:#0d1117; --panel2:#131922; --panel3:#181f2b;
+  --border:#1e2530; --border2:#2a3342;
+  --text:#e2e8f2; --muted:#8792a6; --dim:#5b657a;
+  --green:#2dd4a7; --green-dim:rgba(45,212,167,.12);
+  --red:#f25f5c;  --red-dim:rgba(242,95,92,.12);
+  --amber:#f5b83d; --amber-dim:rgba(245,184,61,.1);
+  --blue:#6c9eff; --violet:#9d7bff; --accent:#39d0c3;
+  --gold:#f5b83d;
+  --mono:"Cascadia Mono","Consolas",monospace;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--text);font:13px/1.5 "Segoe UI",system-ui,sans-serif;height:100vh;display:flex;flex-direction:column;overflow:hidden}
+
+header{display:flex;align-items:center;gap:10px;padding:10px 16px;border-bottom:1px solid var(--border);background:rgba(13,17,23,.85)}
+.brand{font-size:15px;font-weight:700}
+.brand span{color:var(--accent);font-weight:400;font-size:12px;margin-left:6px}
+.note{margin-left:auto;font-size:11px;color:var(--dim)}
+
+main{flex:1;display:grid;grid-template-columns:1fr 400px;min-height:0}
+#chartWrap{position:relative;border-right:1px solid var(--border)}
+#chart{position:absolute;inset:0}
+
+#legend{position:absolute;top:8px;left:8px;z-index:7;display:flex;gap:10px;align-items:center;background:rgba(7,9,15,.78);border:1px solid var(--border);border-radius:8px;padding:6px 10px;font-size:11px;color:var(--muted);backdrop-filter:blur(5px)}
+#legend label{display:flex;align-items:center;gap:4px;cursor:pointer}
+#legend .sw{width:10px;height:10px;border-radius:2px;display:inline-block}
+#csmHide{background:var(--panel2);color:var(--muted);border:1px solid var(--border);border-radius:5px;padding:2px 8px;font-size:9.5px;font-weight:700;cursor:pointer}
+#csmHide:hover{color:var(--text)}
+
+/* ============================================================
+   THIN CSM STRIP — one row: symbol + number only
+   ============================================================ */
+#csmStrip{position:absolute;top:44px;left:8px;right:8px;z-index:6;display:flex;align-items:center;gap:12px;
+  background:linear-gradient(180deg,rgba(15,20,30,.94),rgba(7,9,15,.88));
+  border:1px solid var(--border2);border-radius:10px;padding:6px 12px;
+  backdrop-filter:blur(8px);box-shadow:0 10px 28px rgba(0,0,0,.45), inset 0 1px 0 rgba(255,255,255,.05)}
+#csmStrip::before{content:"";position:absolute;inset:0 0 auto 0;height:1px;border-radius:10px 10px 0 0;
+  background:linear-gradient(90deg,transparent,rgba(57,208,195,.5),transparent)}
+.cs-brand{flex:none;display:flex;flex-direction:column;gap:1px;padding-right:11px;border-right:1px solid var(--border)}
+.cs-t1{font-size:9px;font-weight:800;letter-spacing:1.2px;color:var(--muted)}
+.cs-t1 .tf{color:var(--accent)}
+.cs-t2{font-size:8.5px;color:var(--dim);font-family:var(--mono)}
+.cs-t2 b{color:var(--text)}
+.cs-cols{flex:1;display:grid;grid-template-columns:repeat(8,1fr);gap:8px}
+.cs-col{display:flex;flex-direction:column;align-items:center;gap:0;min-width:0;padding:1px 0;border-radius:6px;transition:background .15s}
+.cs-col:hover{background:rgba(255,255,255,.04)}
+.cs-sym{font-size:9.5px;font-weight:700;display:flex;gap:4px;align-items:center;color:var(--text);line-height:1.2}
+.cs-sym .csm-dot{width:6px;height:6px;border-radius:50%;flex:none}
+.cs-col.strongest .cs-sym{color:var(--gold)}
+.cs-col.weakest .cs-sym{color:var(--red)}
+.cs-num{font-family:var(--mono);font-size:11px;font-weight:600;line-height:1.2}
+.cs-num.pos{color:var(--green)} .cs-num.neg{color:var(--red)}
+.cs-col.strongest .cs-num{text-shadow:0 0 10px rgba(245,184,61,.45)}
+.cs-col.weakest .cs-num{text-shadow:0 0 10px rgba(242,95,92,.4)}
+
+.cs-align{flex:none;display:flex;flex-direction:column;align-items:center;gap:0;padding:3px 11px;border-radius:8px;
+  background:var(--green-dim);border:1px solid rgba(45,212,167,.3)}
+.cs-align.bear{background:var(--red-dim);border-color:rgba(242,95,92,.3)}
+.cs-align .k{font-size:7.5px;letter-spacing:1.2px;color:var(--muted);font-weight:700}
+.cs-align .v{font-size:10.5px;font-weight:800;color:var(--green);font-family:var(--mono);line-height:1.2}
+.cs-align.bear .v{color:var(--red)}
+
+.cs-trans{flex:none;width:210px;display:flex;flex-direction:column;gap:1px;font-size:9.5px;padding-left:11px;border-left:1px solid var(--border)}
+.tr{display:flex;align-items:center;gap:5px;white-space:nowrap;overflow:hidden;line-height:1.5}
+.tr .arr{font-weight:800;flex:none;width:10px;text-align:center}
+.tr .arr.up{color:var(--green)} .tr .arr.dn{color:var(--red)}
+.tr b{color:var(--text);font-weight:700}
+.tr .what{color:var(--muted)}
+.tr .when{margin-left:auto;color:var(--dim);font-family:var(--mono);font-size:8.5px}
+
+/* sidebar context */
+aside{background:linear-gradient(180deg,var(--panel),#0b0f16);border-left:1px solid var(--border);overflow-y:auto}
+.card{background:linear-gradient(180deg,var(--panel2),var(--panel));border:1px solid var(--border);border-radius:14px;padding:14px;margin:12px;box-shadow:0 8px 28px rgba(0,0,0,.45)}
+.card-h{display:flex;align-items:center;gap:7px;margin-bottom:12px}
+.card-h .ic{width:18px;height:18px;border-radius:5px;display:grid;place-items:center;font-size:10px;background:rgba(57,208,195,.1);border:1px solid rgba(57,208,195,.25)}
+.card-h h3{font-size:10.5px;font-weight:700;letter-spacing:1.4px;text-transform:uppercase;color:var(--muted)}
+.card-h .sub{margin-left:auto;font-size:10.5px;color:var(--dim);font-family:var(--mono)}
+.trend-row{display:flex;align-items:center;gap:8px;margin-bottom:12px}
+.trend-pill{font-weight:800;font-size:12.5px;letter-spacing:.8px;padding:5px 13px;border-radius:20px;color:var(--green);background:var(--green-dim);border:1px solid rgba(45,212,167,.4)}
+.trend-note{font-size:11px;color:var(--dim)} .trend-note b{color:var(--text)}
+.kv{display:flex;justify-content:space-between;padding:4.5px 0;border-bottom:1px dashed rgba(255,255,255,.04);font-size:12px}
+.kv span{color:var(--muted)} .kv b{font-family:var(--mono);font-size:11.5px;color:var(--text)}
+@media (max-width:1100px){main{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+
+<header>
+  <div class="brand">⚡ AI Trader <span>CSM thin strip · v3.6-mock</span></div>
+  <span class="note">thin strip · symbol + number only · transitions compacted right · sample data</span>
+</header>
+
+<main>
+  <section id="chartWrap">
+    <div id="chart"></div>
+
+    <div id="legend">
+      <label><input type="checkbox" checked> <span class="sw" style="background:rgba(45,212,167,.2);border:1px solid var(--green)"></span>OB</label>
+      <label><input type="checkbox" checked> <span class="sw" style="background:rgba(108,158,255,.2);border:1px solid var(--blue)"></span>FVG</label>
+      <label><input type="checkbox" checked> <span class="sw" style="background:rgba(242,95,92,.2);border:1px solid var(--red)"></span>PD</label>
+      <button id="csmHide" title="hide/show the strength strip">CSM ⌄</button>
+    </div>
+
+    <!-- ============ THIN CSM STRIP ============ -->
+    <div id="csmStrip">
+      <div class="cs-brand">
+        <div class="cs-t1">CSM · <span class="tf">H1</span></div>
+        <div class="cs-t2">spread <b>1.48σ</b></div>
+      </div>
+      <div class="cs-cols" id="csCols"></div>
+      <div class="cs-align bull">
+        <span class="k">MTF ALIGN</span>
+        <span class="v">EUR/USD ▲▲▲</span>
+      </div>
+      <div class="cs-trans">
+        <div class="tr"><span class="arr up">▲</span><b>EURUSD</b><span class="what">bull</span><span class="when">2 bars</span></div>
+        <div class="tr"><span class="arr dn">▼</span><b>USDJPY</b><span class="what">bear</span><span class="when">5 bars</span></div>
+      </div>
+    </div>
+  </section>
+
+  <aside>
+    <div class="card">
+      <div class="card-h"><span class="ic">◈</span><h3>Market Structure</h3><span class="sub">EURUSD · H1</span></div>
+      <div class="trend-row"><span class="trend-pill">▲ BULLISH</span><span class="trend-note">last: <b>BOS</b> @ 1.08412</span></div>
+      <div class="kv"><span>Dealing range</span><b>1.08210 – 1.08490</b></div>
+      <div class="kv"><span>Equilibrium</span><b>1.08350</b></div>
+      <div class="kv"><span>Fresh OB / FVG</span><b>3 / 5</b></div>
+      <div class="kv"><span>CSM</span><b>thin strip overlay →</b></div>
+    </div>
+    <div class="card">
+      <div class="card-h"><span class="ic">▲</span><h3>Top Setup</h3><span class="sub">EURUSD · H1</span></div>
+      <div class="kv"><span>Verdict</span><b style="color:var(--green)">BUY · score 72</b></div>
+      <div class="kv"><span>Entry / SL / TP</span><b>1.08406 / 1.08241 / 1.08801</b></div>
+      <div class="kv"><span>ML win-probability</span><b>68%</b></div>
+      <div class="empty" style="padding:6px 0 0">full card unchanged in Setups tab</div>
+    </div>
+  </aside>
+</main>
+
+<script>
+const CCYS = [
+  {c:"EUR", col:"#2962ff"},
+  {c:"USD", col:"#ff5252"},
+  {c:"GBP", col:"#ff9800"},
+  {c:"AUD", col:"#4caf50"},
+  {c:"NZD", col:"#00e676"},
+  {c:"CAD", col:"#9c27b0"},
+  {c:"CHF", col:"#e05252"},
+  {c:"JPY", col:"#00bcd4"},
+];
+
+/* ---- chart + candles ---- */
+const chart = LightweightCharts.createChart(document.getElementById('chart'), {
+  layout:{background:{type:'solid',color:'#07090f'},textColor:'#5b657a'},
+  grid:{vertLines:{color:'#10141c'},horzLines:{color:'#10141c'}},
+  rightPriceScale:{borderColor:'#1e2530'},
+  timeScale:{borderColor:'#1e2530',timeVisible:true},
+  crosshair:{mode:1},
+});
+const series = chart.addCandlestickSeries({
+  upColor:'#2dd4a7',downColor:'#f25f5c',borderVisible:false,
+  wickUpColor:'#2dd4a7',wickDownColor:'#f25f5c',
+  priceFormat:{type:'price',precision:5,minMove:0.00001},
+});
+let price = 1.0835; const candles = []; let t = Math.floor(Date.now()/1000) - 600*60;
+for (let i=0;i<600;i++){
+  const o = price; price += (Math.random()-0.485)*0.0009;
+  const c = price, h = Math.max(o,c)+Math.random()*0.0004, l = Math.min(o,c)-Math.random()*0.0004;
+  candles.push({time:t, open:o, high:h, low:l, close:c}); t += 60;
+}
+series.setData(candles);
+new ResizeObserver(()=>chart.applyOptions({width:document.getElementById('chartWrap').clientWidth,height:document.getElementById('chartWrap').clientHeight})).observe(document.getElementById('chartWrap'));
+
+/* ---- synthetic strength history ---- */
+const strength = {};
+const st = {EUR:.25, USD:-.25, GBP:.12, AUD:.05, NZD:-.05, CAD:-.1, CHF:-.18, JPY:-.22};
+const times = candles.map(c=>c.time);
+for (const c of CCYS) strength[c.c] = [];
+for (let i=0;i<times.length;i++){
+  for (const {c} of CCYS){
+    st[c] += -0.03*st[c] + (Math.random()-0.5)*0.085;
+    st[c] = Math.max(-1.35, Math.min(1.35, st[c]));
+    strength[c].push({time: times[i], value: st[c]});
+  }
+}
+
+/* ---- thin strip render: sorted strongest -> weakest ---- */
+function renderStrip(){
+  const snap = CCYS.map(({c,col}) => {
+    const pts = strength[c];
+    return {c, col, v: pts[pts.length-1].value};
+  }).sort((a,b) => b.v - a.v);
+  document.getElementById('csCols').innerHTML = snap.map((s, i) => {
+    const strongest = i === 0, weakest = i === snap.length-1;
+    return `<div class="cs-col ${strongest?'strongest':''} ${weakest?'weakest':''}">
+      <span class="cs-sym"><span class="csm-dot" style="background:${s.col}"></span>${s.c}</span>
+      <span class="cs-num ${s.v>=0?'pos':'neg'}">${s.v>=0?'+':'−'}${Math.abs(s.v).toFixed(2)}</span>
+    </div>`;
+  }).join('');
+}
+renderStrip();
+
+/* ---- hide/show ---- */
+let hidden = false;
+document.getElementById('csmHide').onclick = () => {
+  hidden = !hidden;
+  document.getElementById('csmStrip').style.display = hidden ? 'none' : 'flex';
+  document.getElementById('csmHide').textContent = hidden ? 'CSM ⌃' : 'CSM ⌄';
+};
+</script>
+</body>
+</html>

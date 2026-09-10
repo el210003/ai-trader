@@ -274,6 +274,16 @@ analysis ran (time-only when today, date+time otherwise). Sourced from
 `/api/status` (`last_pull` / `last_analysis`), updates live during cycles
 and on page load.
 
+### CSM strip overlay (v3.3+)
+
+A thin (~45px) strip across the top of the chart: 8 currencies sorted strongest
+→ weakest (colored dot + symbol + signed σ value), spread, MTF alignment pill
+for the selected pair, and the latest alignment transitions. Data from
+`GET /api/csm` (snapshot stored in the `csm` table by `update_csm` — computed
+on every analysis cycle and after bar-close triggers; throttled by
+`csm.min_interval_seconds`). Engine: `app/csm.py` (CSM28 port — per-pair
+z-scores averaged per currency). The `CSM ⌄` button collapses/shows it.
+
 ### Sidebar design notes (v3.0 redesign, ranked tab added in v3.1)
 
 - **Tabs** — *Setups* (live cards for the selected pair), *Ranked* (all current

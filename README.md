@@ -93,6 +93,22 @@ Every qualified setup is **journaled** to the `setups_history` table for forward
   `train --compare` prints the delta; every training run reports permutation
   feature importances.
 
+## Currency Strength Meter (CSM28 port)
+
+The CSM28 Pine concept is built in (`app/csm.py`): for each of the 28 standard
+FX pairs, a z-score of close price over `lookback` bars; currency strength =
+mean of the signed z-scores (base +1 / quote −1), smoothed over `ma_length`.
+The engine auto-ingests the 28 pairs for every configured timeframe and stores
+snapshots, which power:
+
+- a **thin strip overlay on the chart** — 8 currencies sorted strongest → weakest
+  (colored dot + symbol + signed σ value), strongest in gold, weakest in red
+- the **MTF ALIGN pill** — base-vs-quote strength per timeframe for the selected pair
+- the **alignment transitions feed** — pairs that just became aligned on all TFs
+
+Config: `csm:` section (`lookback`, `ma_length`, `ma_type`, `display: MA|ROC`,
+`bars`, `min_pairs`, `min_interval_seconds`).
+
 ## Dashboard
 
 - Candlestick chart (TradingView lightweight-charts) with order-block & FVG boxes,

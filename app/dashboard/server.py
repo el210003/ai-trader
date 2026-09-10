@@ -122,6 +122,12 @@ def create_app(cfg: dict) -> FastAPI:
                             finally:
                                 in_flight.discard((symbol, tf))
                         threading.Thread(target=_work, daemon=True).start()
+                    # refresh the CSM snapshot when bars closed (throttled internally)
+                    if triggers:
+                        try:
+                            pipeline.update_csm(cfg, store, mt5=mt5, demo=demo_mode)
+                        except Exception as e:
+                            state["last_error"] = f"csm update: {e}"
                 except Exception as e:
                     state["last_error"] = f"bar watcher: {e}"
                     try:
@@ -282,6 +288,11 @@ def create_app(cfg: dict) -> FastAPI:
             state["retraining"] = True
             threading.Thread(target=_retrain_job, daemon=True).start()
         return {"ok": True, "message": "retraining started"}
+
+    @app.get("/api/csm")
+    def csm_data():
+        return store.load_csm() or {"strength": {}, "aligned": {}, "transitions": [],
+                                    "pair_states": {}, "generated_at": 0, "pairs_used": 0}
 
     @app.get("/api/setups/ranked")
     def ranked_setups(limit: int = 30):

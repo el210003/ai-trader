@@ -66,6 +66,45 @@ main{flex:1;display:grid;grid-template-columns:1fr 460px;min-height:0}
 .zone{position:absolute;border-radius:2px}
 .zone-label{position:absolute;font-size:9px;font-weight:600;letter-spacing:.5px;padding:1px 4px;border-radius:3px;background:rgba(0,0,0,.5);color:#cfd6e4;white-space:nowrap;pointer-events:none}
 #legend{position:absolute;top:8px;left:8px;z-index:5;display:flex;gap:10px;background:rgba(7,9,15,.78);border:1px solid var(--border);border-radius:8px;padding:6px 10px;font-size:11px;color:var(--muted);backdrop-filter:blur(4px)}
+
+/* ---------- thin CSM strip overlay ---------- */
+#csmStrip{position:absolute;top:44px;left:8px;right:8px;z-index:6;display:none;align-items:center;gap:12px;
+  background:linear-gradient(180deg,rgba(15,20,30,.94),rgba(7,9,15,.88));
+  border:1px solid var(--border2);border-radius:10px;padding:6px 12px;
+  backdrop-filter:blur(8px);box-shadow:0 10px 28px rgba(0,0,0,.45), inset 0 1px 0 rgba(255,255,255,.05)}
+#csmStrip::before{content:"";position:absolute;inset:0 0 auto 0;height:1px;border-radius:10px 10px 0 0;
+  background:linear-gradient(90deg,transparent,rgba(57,208,195,.5),transparent)}
+.cs-brand{flex:none;display:flex;flex-direction:column;gap:1px;padding-right:11px;border-right:1px solid var(--border)}
+.cs-t1{font-size:9px;font-weight:800;letter-spacing:1.2px;color:var(--muted)}
+.cs-t1 .tf{color:var(--accent)}
+.cs-t2{font-size:8.5px;color:var(--dim);font-family:var(--mono)}
+.cs-t2 b{color:var(--text)}
+.cs-cols{flex:1;display:grid;grid-template-columns:repeat(8,1fr);gap:8px}
+.cs-col{display:flex;flex-direction:column;align-items:center;gap:0;min-width:0;padding:1px 0;border-radius:6px;transition:background .15s}
+.cs-col:hover{background:rgba(255,255,255,.04)}
+.cs-sym{font-size:9.5px;font-weight:700;display:flex;gap:4px;align-items:center;color:var(--text);line-height:1.2}
+.cs-sym .csm-dot{width:6px;height:6px;border-radius:50%;flex:none}
+.cs-col.strongest .cs-sym{color:var(--amber)}
+.cs-col.weakest .cs-sym{color:var(--red)}
+.cs-num{font-family:var(--mono);font-size:11px;font-weight:600;line-height:1.2}
+.cs-num.pos{color:var(--green)} .cs-num.neg{color:var(--red)}
+.cs-col.strongest .cs-num{text-shadow:0 0 10px rgba(245,184,61,.45)}
+.cs-col.weakest .cs-num{text-shadow:0 0 10px rgba(242,95,92,.4)}
+.cs-align{flex:none;display:flex;flex-direction:column;align-items:center;gap:0;padding:3px 11px;border-radius:8px;
+  background:var(--green-dim);border:1px solid rgba(45,212,167,.3)}
+.cs-align.bear{background:var(--red-dim);border-color:rgba(242,95,92,.3)}
+.cs-align.mix{background:rgba(135,146,166,.06);border-color:var(--border2)}
+.cs-align .k{font-size:7.5px;letter-spacing:1.2px;color:var(--muted);font-weight:700}
+.cs-align .v{font-size:10.5px;font-weight:800;color:var(--green);font-family:var(--mono);line-height:1.2}
+.cs-align.bear .v{color:var(--red)}
+.cs-align.mix .v{color:var(--muted)}
+.cs-trans{flex:none;width:200px;display:flex;flex-direction:column;gap:1px;font-size:9.5px;padding-left:11px;border-left:1px solid var(--border)}
+.tr{display:flex;align-items:center;gap:5px;white-space:nowrap;overflow:hidden;line-height:1.5}
+.tr .arr{font-weight:800;flex:none;width:10px;text-align:center}
+.tr .arr.up{color:var(--green)} .tr .arr.dn{color:var(--red)}
+.tr b{color:var(--text);font-weight:700}
+.tr .what{color:var(--muted)}
+.tr .when{margin-left:auto;color:var(--dim);font-family:var(--mono);font-size:8.5px}
 #legend label{display:flex;align-items:center;gap:4px;cursor:pointer}
 #legend .sw{width:10px;height:10px;border-radius:2px;display:inline-block}
 
@@ -314,6 +353,21 @@ footer{padding:6px 16px;font-size:11px;color:var(--muted);border-top:1px solid v
       <label><input type="checkbox" id="tgPD" checked> <span class="sw" style="background:rgba(242,95,92,.2)"></span>Premium/Discount</label>
       <label><input type="checkbox" id="tgSweeps" checked> Sweeps</label>
       <label><input type="checkbox" id="tgStructure" checked> BOS/CHoCH</label>
+      <button id="csmHide" title="hide/show the currency strength strip">CSM ⌄</button>
+    </div>
+
+    <!-- thin CSM strip overlay -->
+    <div id="csmStrip" style="display:none">
+      <div class="cs-brand">
+        <div class="cs-t1">CSM · <span class="tf" id="csmTf">—</span></div>
+        <div class="cs-t2">spread <b id="csmSpread">—</b></div>
+      </div>
+      <div class="cs-cols" id="csCols"></div>
+      <div class="cs-align" id="csmAlign">
+        <span class="k">MTF ALIGN</span>
+        <span class="v" id="csmAlignV">—</span>
+      </div>
+      <div class="cs-trans" id="csmTrans"></div>
     </div>
   </section>
 
@@ -382,7 +436,9 @@ footer{padding:6px 16px;font-size:11px;color:var(--muted);border-top:1px solid v
 <script>
 const state = { meta:null, data:null, series:null, chart:null, priceLines:[], pricePrecision:null,
                 allSymbols:[], filterText:'', settingsPending:new Set(), settingsOriginal:new Set(),
-                journalLoaded:false };
+                journalLoaded:false, csm:null, csmHidden:false };
+const CCY_COLORS = {EUR:'#2962ff', USD:'#ff5252', GBP:'#ff9800', AUD:'#4caf50',
+                    NZD:'#00e676', CAD:'#9c27b0', CHF:'#e05252', JPY:'#00bcd4'};
 const $ = id => document.getElementById(id);
 
 /* ---------------------------------------------------------------- chart */
@@ -783,6 +839,7 @@ async function loadAnalysis(){
     state.data = await r.json();
     setStatus(state.data.analysis ? 'ok' : '', state.data.analysis ? `${symbol} ${tf} ready` : 'no analysis yet');
     renderChart(); renderStructure(); renderSetups();
+    renderCsmStrip();   // re-render for the selected symbol/tf from cached snapshot
   }catch(e){ setStatus('err', String(e)); }
 }
 
@@ -816,7 +873,7 @@ async function pollStatus(){
   else if (s.last_run && s.last_run.bar_close){ setStatus('ok', `bar closed ${s.last_run.bar_close} → updated ${new Date(s.last_run.at*1000).toLocaleTimeString()}`); }
   else if (s.last_run){ setStatus('ok', `updated ${new Date(s.last_run.at*1000).toLocaleTimeString()} (${s.last_run.analyses} pairs)`); }
   state.journalLoaded = false;   // new analysis -> journal changed
-  await loadMeta(); await loadAnalysis();
+  await loadMeta(); await loadAnalysis(); await loadCsm();
   if (document.getElementById('viewJournal').style.display !== 'none') loadJournal();
   if (document.getElementById('viewRanked').style.display !== 'none') loadRanked();
 }
@@ -875,6 +932,70 @@ function showTab(which){
   if (which==='journal') loadJournal();
   if (which==='ranked') loadRanked();
 }
+
+/* ------------------------------------------------- thin CSM strip */
+async function loadCsm(){
+  try{
+    const r = await fetch('/api/csm');
+    const j = await r.json();
+    state.csm = (j && j.strength && Object.keys(j.strength).length) ? j : null;
+  }catch(e){ state.csm = null; }
+  renderCsmStrip();
+}
+
+function renderCsmStrip(){
+  const strip = $('csmStrip');
+  const j = state.csm;
+  const tf = $('tfSel').value;
+  const s = j?.strength?.[tf];
+  if (!s || !Object.keys(s).length || state.csmHidden){ strip.style.display = 'none'; return; }
+  strip.style.display = 'flex';
+  $('csmTf').textContent = tf;
+  const arr = Object.entries(s).map(([c,v]) => ({c, v})).sort((a,b) => b.v - a.v);
+  $('csmSpread').textContent = (arr[0].v - arr[arr.length-1].v).toFixed(2) + 'σ';
+  $('csCols').innerHTML = arr.map((x, i) => {
+    const strongest = i === 0, weakest = i === arr.length-1;
+    return `<div class="cs-col ${strongest?'strongest':''} ${weakest?'weakest':''}">
+      <span class="cs-sym"><span class="csm-dot" style="background:${CCY_COLORS[x.c]||'#888'}"></span>${x.c}</span>
+      <span class="cs-num ${x.v>=0?'pos':'neg'}">${x.v>=0?'+':'−'}${Math.abs(x.v).toFixed(2)}</span>
+    </div>`;
+  }).join('');
+
+  // MTF alignment for the selected pair (base vs quote per timeframe)
+  const sym = $('symbolSel').value || '';
+  const base = sym.slice(0,3), quote = sym.slice(3,6);
+  const aligned = j.aligned?.[sym];
+  const states = j.pair_states?.[sym] || {};
+  const alignEl = $('csmAlign'), alignV = $('csmAlignV');
+  const tfs = state.meta?.timeframes || [];
+  if (aligned === 'up' || aligned === 'down'){
+    alignEl.className = 'cs-align ' + (aligned==='up'?'bull':'bear');
+    const arrows = tfs.map(t => {
+      const stt = states[t];
+      return stt === 'up' ? '<span class="up">▲</span>' : stt === 'down' ? '<span class="dn">▼</span>' : '<span class="mx">▬</span>';
+    }).join(' ');
+    alignV.innerHTML = `${esc(base)}/${esc(quote)} ${arrows}`;
+    alignV.title = `base vs quote strength per TF — ${aligned === 'up' ? 'bullish' : 'bearish'} alignment on all timeframes`;
+  } else {
+    alignEl.className = 'cs-align mix';
+    alignV.textContent = sym ? 'mixed' : '—';
+    alignV.title = 'no cross-TF alignment for this pair';
+  }
+
+  // transitions: latest 2, newest first
+  const trs = (j.transitions||[]).slice(-2).reverse();
+  $('csmTrans').innerHTML = trs.length ? trs.map(t => {
+    const cls = t.dir === 'up' ? 'up' : 'dn';
+    const when = t.at ? new Date(t.at*1000).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'}) : '';
+    return `<div class="tr"><span class="arr ${cls}">${t.dir==='up'?'▲':'▼'}</span><b>${esc(t.pair)}</b><span class="what">${t.dir==='up'?'bull':'bear'} aligned</span><span class="when">${esc(when)}</span></div>`;
+  }).join('') : '<div class="tr"><span class="what" style="color:var(--dim)">no recent transitions</span></div>';
+}
+
+$('csmHide').onclick = () => {
+  state.csmHidden = !state.csmHidden;
+  $('csmHide').textContent = state.csmHidden ? 'CSM ⌃' : 'CSM ⌄';
+  renderCsmStrip();
+};
 
 /* -------------------------------------------------- ranked setups tab */
 async function loadRanked(){
@@ -1074,6 +1195,7 @@ $('autoRefresh').onchange = setupAuto;
   initChart();
   try{ await loadMeta(); }catch(e){ setStatus('err','server unreachable'); return; }
   await loadAnalysis();
+  await loadCsm();
   setupAuto();
   // deep-link tabs: #ranked / #journal
   if (location.hash === '#ranked') showTab('ranked');

@@ -96,6 +96,21 @@ ai:
     llm_weight: 0.4          # weight of LLM confidence in final score
     buy_threshold: 60        # final score needed to emit BUY/SELL (else WAIT)
 
+# Currency Strength Meter (CSM28 port): z-scores over the 28 standard pairs,
+# averaged per currency (base +1 / quote -1), smoothed. The engine auto-ingests
+# the 28 pairs for every configured timeframe and stores snapshots (which also
+# power the MTF-alignment transitions feed).
+csm:
+  enabled: true
+  lookback: 20              # z-score window
+  ma_length: 10             # smoothing length
+  ma_type: SMA              # SMA | EMA
+  display: MA               # MA (absolute strength) | ROC (momentum change)
+  roc_len: 1                # ROC length when display is ROC
+  bars: 400                 # history pulled per CSM pair
+  min_pairs: 10             # skip computation if fewer pairs available
+  min_interval_seconds: 30  # throttle between snapshot refreshes
+
 dashboard:
   host: 0.0.0.0
   port: 8000

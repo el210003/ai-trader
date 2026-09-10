@@ -5,6 +5,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from . import smc as smc_mod
+from .csm import update_csm
 from .data.store import Store
 from .data import mt5_client
 from .engine.setup_builder import build_setups
@@ -229,6 +230,12 @@ def run_all(cfg: dict, store: Store = None, demo: bool = False,
                 except Exception as e:
                     if verbose:
                         print(f"  [warn] ingest failed {symbol} {tf}: {e}")
+            # currency strength snapshot (pulls the 28 CSM pairs itself)
+            try:
+                update_csm(cfg, store, mt5=mt5, demo=demo, verbose=verbose)
+            except Exception as e:
+                if verbose:
+                    print(f"  [warn] csm update failed: {e}")
         finally:
             if mt5 is not None:
                 mt5_client.shutdown_mt5(mt5)
