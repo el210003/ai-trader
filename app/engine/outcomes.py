@@ -62,8 +62,12 @@ def _resolve_one(df, r: dict, horizon: int):
                     continue
             # conservative: SL wins same-bar ties (mirrors the labeler)
             if lo <= sl:
-                return _outcome(r, LOSS, filled, fill_time, -1.0, mfe, mae, k - start, times[k])
+                mae = max(mae, (entry - lo) / risk)
+                hit = _post_loss_tp(df, k, end, direction, tp)
+                return _outcome(r, LOSS, filled, fill_time, -1.0, mfe, mae,
+                                k - start, times[k], post_loss_tp_hit=hit)
             if hi >= tp:
+                mfe = max(mfe, (hi - entry) / risk)
                 return _outcome(r, WIN, filled, fill_time, float(r["rr"] or 0.0),
                                 mfe, mae, k - start, times[k])
             mfe = max(mfe, (hi - entry) / risk)
@@ -75,8 +79,12 @@ def _resolve_one(df, r: dict, horizon: int):
                 else:
                     continue
             if hi >= sl:
-                return _outcome(r, LOSS, filled, fill_time, -1.0, mfe, mae, k - start, times[k])
+                mae = max(mae, (hi - entry) / risk)
+                hit = _post_loss_tp(df, k, end, direction, tp)
+                return _outcome(r, LOSS, filled, fill_time, -1.0, mfe, mae,
+                                k - start, times[k], post_loss_tp_hit=hit)
             if lo <= tp:
+                mfe = max(mfe, (entry - lo) / risk)
                 return _outcome(r, WIN, filled, fill_time, float(r["rr"] or 0.0),
                                 mfe, mae, k - start, times[k])
             mfe = max(mfe, (entry - lo) / risk)
@@ -91,16 +99,31 @@ def _resolve_one(df, r: dict, horizon: int):
     return _outcome(r, EXPIRED_OPEN, True, fill_time, None, mfe, mae, horizon, None)
 
 
+def _post_loss_tp(df, loss_k: int, end: int, direction: str, tp: float) -> int:
+    """Tier-0 diagnostic: after being stopped out, did price reach what would
+    have been TP within the remaining horizon? (SL-placement quality measure.)"""
+    for k in range(loss_k + 1, end):
+        if direction == "long":
+            if float(df["high"].iat[k]) >= tp:
+                return 1
+        else:
+            if float(df["low"].iat[k]) <= tp:
+                return 1
+    return 0
+
+
 def _base(r: dict) -> dict:
     return {"setup_id": r["id"], "symbol": r["symbol"], "tf": r["tf"],
             "direction": r["direction"]}
 
 
-def _outcome(r: dict, result, filled, fill_time, r_mult, mfe, mae, bars, t):
+def _outcome(r: dict, result, filled, fill_time, r_mult, mfe, mae, bars, t,
+             post_loss_tp_hit=None):
     return {**_base(r), "result": result, "filled": 1 if filled else 0,
             "fill_time": fill_time, "r_multiple": r_mult,
             "mfe_r": round(float(mfe), 3), "mae_r": round(float(mae), 3),
             "bars_to_outcome": int(bars),
+            "post_loss_tp_hit": post_loss_tp_hit,
             "resolved_at": int(t) if t else int(time.time())}
 
 

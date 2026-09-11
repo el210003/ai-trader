@@ -312,11 +312,39 @@ def cmd_outcomes(cfg, args):
     print("\nfull aggregates: GET /api/outcomes/stats (Performance tab)")
 
 
+def cmd_insights(cfg, args):
+    """Print tier-1 diagnosis insights + tier-2 feature discrimination report."""
+    from .engine import insights as insights_mod
+    store = Store(cfg["storage"]["path"])
+    outcomes_mod.resolve_pending(store, cfg)
+    rows = store.load_outcome_rows(args.symbol, args.tf)
+    ins = insights_mod.generate_insights(rows, cfg)
+    print(f"insights ({len(ins)}) — buckets under {insights_mod.MIN_BUCKET} "
+          f"resolved outcomes are suppressed:\n")
+    if not ins:
+        print("  no insights yet — accumulate resolved outcomes (weeks of M15 data)")
+    for i in ins:
+        sev = {"action": "!!", "warn": " !", "info": "  "}.get(i["severity"], "  ")
+        print(f"{sev} [{i['title']}] (n={i['n']})")
+        print(f"     {i['finding']}")
+        if i["suggest"]:
+            print(f"     -> suggest {i['suggest'].get('config_key')}: "
+                  f"{i['suggest'].get('current')} -> {i['suggest'].get('proposed')}")
+        print()
+    rep = insights_mod.feature_report(rows)
+    print(f"feature discrimination (tercile win-rate spread, "
+          f"powerful >= 0.15, dead < 0.07):")
+    for r in rep:
+        t = r["terciles"]
+        detail = f"  {[x['win_rate'] for x in t]}" if t else ""
+        print(f"  {r['feature']:<26} {r['verdict']:<12} spread={r['spread']}{detail}")
+
+
 def main():
     p = argparse.ArgumentParser(prog="ai-trader")
     p.add_argument("command", choices=["ingest", "analyze", "train", "serve",
                                        "run", "list-symbols", "select-symbols",
-                                       "history", "outcomes", "test-llm"])
+                                       "history", "outcomes", "insights", "test-llm"])
     p.add_argument("--demo", action="store_true", help="use synthetic data instead of MT5")
     p.add_argument("--all-symbols", action="store_true",
                    help="override config.yaml symbols with symbols discovered from MT5")
@@ -335,8 +363,8 @@ def main():
                    help="(train) save metrics as baseline for --compare")
     p.add_argument("--compare", action="store_true",
                    help="(train) compare metrics against the saved baseline")
-    p.add_argument("--symbol", default=None, help="(history/outcomes) filter by symbol")
-    p.add_argument("--tf", default=None, help="(history/outcomes) filter by timeframe")
+    p.add_argument("--symbol", default=None, help="(history/outcomes/insights) filter by symbol")
+    p.add_argument("--tf", default=None, help="(history/outcomes/insights) filter by timeframe")
     p.add_argument("--limit", default=50, help="(history) max rows to show")
     p.add_argument("--auto", type=int, default=0,
                    help="(serve) auto-run the full pipeline every N seconds (0 = off)")
@@ -352,6 +380,7 @@ def main():
         "select-symbols": cmd_select_symbols,
         "history": cmd_history,
         "outcomes": cmd_outcomes,
+        "insights": cmd_insights,
         "test-llm": cmd_test_llm,
     }
     handlers[args.command](cfg, args)

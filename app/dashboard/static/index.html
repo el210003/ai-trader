@@ -125,6 +125,12 @@ main{flex:1;display:grid;grid-template-columns:1fr 460px;min-height:0}
 .rs-item{display:inline-flex;flex-direction:column;align-items:center;gap:0;padding:5px 12px;border-radius:9px;border:1px solid var(--border2);background:rgba(255,255,255,.02);min-width:74px}
 .rs-item .rs-v{font-family:var(--mono);font-size:13px;font-weight:700;color:var(--text);line-height:1.2}
 .rs-item .rs-k{font-size:8px;letter-spacing:1px;text-transform:uppercase;color:var(--dim)}
+.ins-row{padding:7px 4px;border-bottom:1px solid rgba(135,146,166,.08)}
+.ins-row .ins-t{font-size:11px;font-weight:700;color:var(--text)}
+.ins-row .ins-n{font-weight:400;color:var(--dim);font-size:9.5px}
+.ins-row .ins-f{font-size:10.5px;color:var(--muted);margin-top:2px;line-height:1.45}
+.ins-row .ins-sug{font-size:10.5px;color:var(--amber);margin-top:3px}
+.ins-row .ins-sug b{color:var(--text)}
 #legend label{display:flex;align-items:center;gap:4px;cursor:pointer}
 #legend .sw{width:10px;height:10px;border-radius:2px;display:inline-block}
 
@@ -434,6 +440,8 @@ footer{padding:6px 16px;font-size:11px;color:var(--muted);border-top:1px solid v
       </div>
       <div class="card"><div class="card-h"><span class="ic">⚖</span><h3>By Verdict · Score Band · ML Calibration</h3></div><div id="perfTables1"><div class="empty">loading…</div></div></div>
       <div class="card"><div class="card-h"><span class="ic">◈</span><h3>By HTF Alignment · Direction · Session · Symbol</h3></div><div id="perfTables2"><div class="empty">loading…</div></div></div>
+      <div class="card"><div class="card-h"><span class="ic">⚡</span><h3>Insights &amp; Recommendations</h3><span class="sub" id="insightsSub">auto-diagnosis from resolved outcomes</span></div><div id="insightRows"><div class="empty">loading…</div></div></div>
+      <div class="card"><div class="card-h"><span class="ic">∿</span><h3>Feature Discrimination</h3><span class="sub">tercile win-rate spread per ML feature</span></div><div id="featReport"><div class="empty">loading…</div></div></div>
       <div class="hint">R = realized multiple of the setup's planned risk. Expectancy = average R per resolved setup. WAIT/AVOID rows are resolved too — they validate the threshold. Source: <span style="font-family:var(--mono)">/api/outcomes/stats</span>.</div>
     </div>
   </aside>
@@ -1111,6 +1119,28 @@ async function loadPerf(){
       perfTable('Session (UTC)', mk(j.by_session)) +
       perfTable('Symbol', mk(j.by_symbol));
   }catch(e){ $('perfOverall').innerHTML = '<div class="empty">failed to load</div>'; }
+  try{
+    const etf2 = state.meta?.entry_tf;
+    const r2 = await fetch('/api/insights' + (etf2 ? `?tf=${encodeURIComponent(etf2)}` : ''));
+    const j2 = await r2.json();
+    $('insightsSub').textContent = `auto-diagnosis · ${j2.n_resolved||0} resolved · buckets <20 suppressed`;
+    const sevIcon = s => s==='action' ? '<span style="color:var(--amber)">!!</span>' : s==='warn' ? '<span style="color:var(--red)">!</span>' : '<span style="color:var(--muted)">·</span>';
+    $('insightRows').innerHTML = (j2.insights||[]).length ? (j2.insights||[]).map(i => {
+      const sug = i.suggest && i.suggest.config_key
+        ? `<div class="ins-sug">→ <span class="mono">${esc(i.suggest.config_key)}</span>: ${esc(String(i.suggest.current))} → <b>${esc(String(i.suggest.proposed))}</b></div>` : '';
+      return `<div class="ins-row"><div class="ins-t">${sevIcon(i.severity)} ${esc(i.title)} <span class="ins-n">(n=${i.n??'—'})</span></div>` +
+             `<div class="ins-f">${esc(i.finding)}</div>${sug}</div>`;
+    }).join('') : '<div class="empty">No insights yet — they appear as resolved outcomes accumulate (weeks of M15 data).</div>';
+    const fr = j2.feature_report||[];
+    const vCls = v => v==='powerful' ? 'var(--green)' : v==='dead' ? 'var(--red)' : 'var(--muted)';
+    $('featReport').innerHTML = fr.length ? `<table class="perf-t">
+      <tr><th>Feature</th><th>Verdict</th><th>Spread</th><th>Tercile win rates (low→high)</th></tr>
+      ${fr.map(x => `<tr><td class="mono">${esc(x.feature)}</td>
+        <td style="color:${vCls(x.verdict)}">${esc(x.verdict)}</td>
+        <td class="mono">${x.spread==null?'—':x.spread.toFixed(2)}</td>
+        <td class="mono">${x.terciles ? x.terciles.map(t=>(t.win_rate*100).toFixed(0)+'%').join(' · ') : '—'}</td></tr>`).join('')}
+    </table>` : '<div class="empty">waiting for resolved outcomes</div>';
+  }catch(e){ $('insightRows').innerHTML = '<div class="empty">failed to load</div>'; }
 }
 
 /* -------------------------------------------------- ranked setups tab */

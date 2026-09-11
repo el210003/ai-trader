@@ -12,7 +12,7 @@ from .data import mt5_client
 from .engine.setup_builder import build_setups
 from .engine.mtf import build_htf_context
 from .engine.outcomes import resolve_pending
-from .ai.features import make_features, FEATURES
+from .ai.features import make_features, FEATURES, feature_vector
 from .ai.symbol_stats import SymbolStats
 from .ai.ml_model import SetupML
 from .ai.llm import LLMAnalyzer
@@ -450,7 +450,9 @@ def train(cfg: dict, store: Store = None, demo: bool = False,
             mtf_on = cfg.get("mtf", {}).get("enabled", True)
             df_cache: dict = {}     # (symbol, htf) -> full HTF frame
             ctx_cache: dict = {}    # (symbol, htf, last closed HTF bar) -> ctx
+            sym_list_stats = static  # noqa: F841 (readability anchor)
             made = 0
+            replay_ids.update() if False else None
             for i in range(warmup, n - horizon - 1, step):
                 sub = df.iloc[:i + 1].reset_index(drop=True)
                 try:
@@ -478,6 +480,7 @@ def train(cfg: dict, store: Store = None, demo: bool = False,
                                                   htf_ctx=htf_ctx)
                     rows.append(s["features"])
                     labels.append(y)
+                    replay_ids.add((symbol, tf, int(s["formed_at"]), s["direction"]))
                     history.append({
                         "formed_index": s["formed_index"],
                         "horizon_end_index": min(s["formed_index"] + horizon, n - 1),
@@ -493,8 +496,52 @@ def train(cfg: dict, store: Store = None, demo: bool = False,
     if not rows:
         raise RuntimeError("no labeled setups generated")
 
+    # ---- tier 3: blend resolved live outcomes into the training set
+    live_cfg = ml_cfg.get("live_outcomes", {})
+    live_rows, live_labels = [], []
+    if live_cfg.get("enabled"):
+        min_live = int(live_cfg.get("min_samples", 200))
+        live = store.live_training_samples() if store else []
+        # dedupe against replay rows by (symbol, tf, formed_at, direction)
+        for s in live:
+            key = (s["symbol"], s["tf"], s["formed_at"], s["direction"])
+            if key in replay_ids:
+                continue
+            live_rows.append(s["features"])
+            live_labels.append(s["label"])
+        if len(live_rows) < min_live:
+            if verbose:
+                print(f"  [live-blend] {len(live_rows)} live samples < min {min_live} "
+                      f"-- training on replay only")
+            live_rows, live_labels = [], []
+
     ml = SetupML(ml_cfg["model_path"])
-    metrics = ml.train(rows, labels, min_samples=int(ml_cfg["min_train_samples"]))
+    all_rows, all_labels = rows + live_rows, labels + live_labels
+    metrics = ml.train(all_rows, all_labels, min_samples=int(ml_cfg["min_train_samples"]))
+    if live_rows:
+        metrics["n_live"] = len(live_rows)
+        # keep the better of blended vs replay-only by cv_auc
+        from sklearn.ensemble import HistGradientBoostingClassifier
+        from sklearn.model_selection import cross_val_score
+        import numpy as _np
+        try:
+            m_tmp = HistGradientBoostingClassifier(
+                max_iter=250, max_depth=4, learning_rate=0.06,
+                min_samples_leaf=10, l2_regularization=1.0, random_state=42)
+            X0 = _np.array([feature_vector(r) for r in rows], dtype=float)
+            y0 = _np.array(labels, dtype=int)
+            n_split = 3 if len(y0) >= 90 else 2
+            auc0 = float(_np.mean(cross_val_score(m_tmp, X0, y0, cv=n_split, scoring="roc_auc")))
+            metrics["cv_auc_replay_only"] = round(auc0, 3)
+            if metrics.get("cv_auc") is not None and auc0 > metrics["cv_auc"] + 0.01:
+                if verbose:
+                    print(f"  [live-blend] replay-only cv_auc {auc0:.3f} beats blended "
+                          f"{metrics['cv_auc']:.3f} -- retraining on replay only")
+                metrics = ml.train(rows, labels, min_samples=int(ml_cfg["min_train_samples"]))
+                metrics["n_live"] = 0
+                metrics["cv_auc_replay_only"] = round(auc0, 3)
+        except Exception:
+            pass
     mark_model_retrained()
 
     if verbose:

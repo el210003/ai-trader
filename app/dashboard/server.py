@@ -353,6 +353,15 @@ def create_app(cfg: dict) -> FastAPI:
         rows = store.load_outcome_rows(symbol, tf)
         return outcomes_mod.aggregate(rows)
 
+    @app.get("/api/insights")
+    def insights(tf: str = None):
+        """Tier 1+2: diagnosis insights + feature discrimination report."""
+        from ..engine import insights as insights_mod
+        rows = store.load_outcome_rows(None, tf)
+        return {"insights": insights_mod.generate_insights(rows, cfg),
+                "feature_report": insights_mod.feature_report(rows),
+                "n_resolved": sum(1 for r in rows if r["result"] in ("WIN", "LOSS"))}
+
     @app.post("/api/outcomes/resolve")
     def outcomes_resolve():
         from ..engine import outcomes as outcomes_mod
