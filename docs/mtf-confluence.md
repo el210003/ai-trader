@@ -87,9 +87,14 @@ the per-setup HTF metrics are stored either way.
 3. After enough journal history: filter outcomes by `htf_trend_align` and
    decide whether to flip `require_htf_bias: true`.
 
-## Non-goals / follow-ups
+## Entry-timeframe filter (implemented after rollout)
 
-- H1/H4 setups still appear in the UI (they are context; can be hidden later
-  via an entry-TF filter if cluttered).
+`mtf.entry_tf: M15` — when set, ONLY that timeframe generates trade setups.
+Other configured TFs are analyzed as context (SMC structure stored for the
+chart and the M15 confluence) but produce no setups, no ML predictions, and
+no LLM calls — saving compute and tokens on 2/3 of the pairs each cycle.
+Their sidebar cards show a "context-only" banner; the ranked tab and journal
+fill from stored setups, so they become entry-TF-only automatically after
+one analysis cycle. Empty = legacy behavior (all TFs generate setups).
 - CSM strength as its own ML feature (currently only a confluence line).
 - Live outcome tracking in the journal (separate known gap).

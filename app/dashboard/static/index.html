@@ -723,6 +723,14 @@ function renderSetups(){
   const list = (a?.setups||[]);
   $('cntSetups').textContent = list.length;
   $('sideCounts').textContent = `${list.length} setup${list.length===1?'':'s'} · ${esc(a?.symbol||'')} ${esc(a?.tf||'')}`;
+  if (a?.context_only){
+    const entryTf = state.meta?.entry_tf || 'M15';
+    el.innerHTML = `<div class="card"><div class="empty"><b style="color:var(--amber)">${esc(a?.tf||'')} is context-only</b><br>` +
+      `Your entries are <b>${esc(entryTf)}</b>. This timeframe feeds the MTF confluence ` +
+      `(structure, zones, liquidity) into ${esc(entryTf)} setups — no trade setups are generated here.<br>` +
+      `<span style="font-size:11px">Switch the TF selector to ${esc(entryTf)} to see tradeable setups.</span></div></div>`;
+    return;
+  }
   if (!a || !list.length){
     el.innerHTML = '<div class="card"><div class="empty">No qualified setups right now.<br><span style="font-size:11px">The engine needs structure + sweep + fresh zone confluence — silence is by design.</span></div></div>';
     return;

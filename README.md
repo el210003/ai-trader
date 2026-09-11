@@ -100,7 +100,8 @@ confluence: HTF structure alignment, entry in the HTF discount/premium half,
 entry at an HTF order block/FVG, HTF liquidity pools as take-profit targets,
 plus CSM alignment. Four ML features (`htf_trend_align`, `htf_pd_alignment`,
 `entry_in_htf_zone`, `htf_tp_distance_atr`) and an optional
-`require_htf_bias` hard filter (off by default) — see
+`require_htf_bias` hard filter (off by default), and `entry_tf: M15` —
+only the entry timeframe generates trade setups (others are context only) — see
 `docs/mtf-confluence.md`. HTF bars are sliced with no look-ahead (only bars
 closed before the entry bar), identical in training and live analysis.
 

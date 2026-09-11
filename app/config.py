@@ -74,6 +74,7 @@ DEFAULTS = {
         "enabled": True,
         "require_htf_bias": False,
         "zone_buffer_atr": 0.5,
+        "entry_tf": "",
     },
     "dashboard": {"host": "127.0.0.1", "port": 8000, "refresh_seconds": 60,
                   "auto_run_interval": 0, "bar_close_watcher": False,

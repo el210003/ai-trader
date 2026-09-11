@@ -186,6 +186,7 @@ def create_app(cfg: dict) -> FastAPI:
         return {
             "symbols": visible_symbols(),
             "timeframes": cfg["timeframes"],
+            "entry_tf": (cfg.get("mtf", {}).get("entry_tf") or "").strip().upper(),
             "refresh_seconds": int(cfg["dashboard"]["refresh_seconds"]),
             "auto_run_seconds": auto_run if not bar_close else 0,
             "bar_close_watcher": bar_close,

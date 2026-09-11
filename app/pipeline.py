@@ -67,17 +67,47 @@ def analyze_symbol(store: Store, symbol: str, tf: str, cfg: dict,
 
     smc = smc_mod.analyze(df, cfg["smc"])
 
+    # entry_tf: when set (e.g. "M15"), other timeframes are context only —
+    # their SMC structure is stored for chart/HTF use but no trade setups,
+    # ML predictions, or LLM calls are produced for them.
+    entry_tf = (cfg.get("mtf", {}).get("entry_tf") or "").strip().upper()
+    context_only = bool(entry_tf) and tf.strip().upper() != entry_tf
+
     # MTF confluence context: higher timeframes for this entry TF (H1/H4 for M15)
     mtf_cfg = cfg.get("mtf", {})
     htf_ctx = {}
     csm_dir = None
-    if mtf_cfg.get("enabled", True):
+    if mtf_cfg.get("enabled", True) and not context_only:
         htf_ctx = build_htf_context(symbol, tf, cfg,
                                     up_to_time=int(df["time"].iat[-1]),
                                     load_df=store.load_candles)
         csm = store.load_csm()
         if csm:
             csm_dir = (csm.get("aligned") or {}).get(symbol)
+
+    if context_only:
+        analysis = {
+            "symbol": symbol, "tf": tf, "generated_at": int(time.time()),
+            "meta": {"bars": int(smc["n_bars"]), "model_loaded": ml.loaded,
+                     "llm_used": llm.usable},
+            "smc": {
+                "trend": smc["trend"],
+                "events": smc["events"][-40:],
+                "sweeps": smc["sweeps"][-40:],
+                "liquidity_pools": smc["liquidity_pools"],
+                "dealing_range": smc["dealing_range"],
+                "order_blocks": smc["order_blocks"],
+                "fvgs": smc["fvgs"],
+                "atr": smc["atr"],
+                "last_close": smc["last_close"],
+                "swings": smc["swings"][-40:],
+            },
+            "htf": {},
+            "setups": [],
+            "context_only": True,
+        }
+        store.save_analysis(symbol, tf, jsonable(analysis))
+        return analysis
 
     setups = build_setups(symbol, tf, df, smc, cfg["smc"], htf_ctx=htf_ctx,
                           csm_dir=csm_dir, mtf_cfg=mtf_cfg)
