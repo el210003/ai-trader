@@ -701,6 +701,7 @@ function renderStructure(){
       const cur = a && a.tf === tf ? ' cur' : '';
       const tip = `${tf}: ${s}` +
         (st.age != null ? ` · last BOS/CHoCH ${st.age} bars ago` : ' · no structure events') +
+        (st.median_gap != null ? ` (typical gap ~${st.median_gap})` : '') +
         (st.zone ? ` · price in ${st.zone} half` : '');
       return `<span class="mtf-chip ${cls}${cur}" title="${esc(tip)} — click to open this timeframe" onclick="switchTf('${tf}')">${tf} ${arr}</span>`;
     }).join('');
@@ -718,7 +719,8 @@ function renderStructure(){
   const pillCls = stale ? 'range' : (structStatus === 'bullish' ? 'bullish' : structStatus === 'bearish' ? 'bearish' : 'neutral');
   const pillArrow = stale ? '▬' : trendArrow;
   const pillTxt = stale ? `RANGE · last ${s.trend.toUpperCase()}` : String(structStatus).toUpperCase();
-  const staleNote = stale && mtfSelf.age != null ? ` · ${mtfSelf.age} bars without a new BOS/CHoCH` : '';
+  const staleNote = stale && mtfSelf.age != null
+    ? ` · ${mtfSelf.age} bars without a new BOS/CHoCH${mtfSelf.median_gap != null ? ` (typical ~${mtfSelf.median_gap})` : ''}` : '';
   el.innerHTML = `
     <div class="card-h"><span class="ic">◈</span><h3>Market Structure</h3><span class="sub">${esc(a.symbol)} · ${esc(a.tf)}</span></div>
     ${mtfHead(a)}

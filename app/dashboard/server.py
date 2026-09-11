@@ -438,8 +438,10 @@ def create_app(cfg: dict) -> FastAPI:
     @app.get("/api/mtf_status")
     def mtf_status(symbol: str):
         """Per-timeframe structure status for one symbol (bullish/bearish/range)
-        from the stored analyses. 'range' = no structure event, or the last
-        BOS/CHoCH is older than 20 bars on that timeframe."""
+        from the stored analyses. 'range' is EVIDENCE-BASED: the last BOS/CHoCH
+        must be older than 2.5x this symbol/TF's typical inter-event gap
+        (floor 20 bars) - event cadence differs per timeframe and market."""
+        import statistics
         out = {}
         for tf in cfg["timeframes"]:
             p = store.load_analysis(symbol, tf)
@@ -454,11 +456,20 @@ def create_app(cfg: dict) -> FastAPI:
             if last and isinstance(last.get("index"), int) and n_bars:
                 age = max(0, n_bars - 1 - last["index"])
             trend = smc.get("trend")
+            # adaptive staleness threshold from the symbol's own event cadence
+            idxs = [e["index"] for e in events[-11:]]
+            gaps = [b - a for a, b in zip(idxs, idxs[1:])]
+            med = statistics.median(gaps) if gaps else None
+            threshold = max(20, 2.5 * med) if med else None
             status = trend if trend in ("bullish", "bearish") else "range"
-            if age is not None and age > 20:
-                status = "range"       # last structure event is stale
+            if trend not in ("bullish", "bearish"):
+                status = "range"
+            elif threshold is not None and age is not None and age > threshold:
+                status = "range"       # no new break far beyond the usual cadence
             dr = smc.get("dealing_range") or {}
             out[tf] = {"status": status, "trend": trend, "age": age,
+                       "median_gap": round(med, 1) if med else None,
+                       "threshold": round(threshold, 1) if threshold else None,
                        "zone": dr.get("zone"), "position": dr.get("position")}
         return out
 
