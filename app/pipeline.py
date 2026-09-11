@@ -15,7 +15,7 @@ from .engine.mtf import build_htf_context
 from .engine.outcomes import resolve_pending
 from .ai.features import make_features, FEATURES, feature_vector
 from .ai.symbol_stats import SymbolStats
-from .ai.ml_model import SetupML
+from .ai.ml_model import SetupML, BUILDER_VERSION
 from .ai.llm import LLMAnalyzer
 from .ai.hybrid import fuse
 from .util import jsonable
@@ -409,17 +409,28 @@ def feature_set_hash() -> str:
     return hashlib.md5(json.dumps(payload).encode()).hexdigest()[:12]
 
 
-# bump when setup-construction behavior changes (not when a feature changes)
-BUILDER_VERSION = "v3-entry-validity"
 
-
-def model_needs_retrain() -> bool:
-    """True when the deployed model predates the current feature set.
-    Auto-retrain on first use after an upgrade."""
+def model_needs_retrain(model_path: str = None) -> bool:
+    """True when the deployed model predates the current feature set OR the
+    current setup-builder version. Checks BOTH the marker and (when given) the
+    model's own recorded feature list + builder version, so a marker/file
+    mismatch (e.g. a test that rewrote the marker) can't hide a stale model."""
     try:
-        return FEATURE_SET_MARKER.read_text().strip() != feature_set_hash()
+        if FEATURE_SET_MARKER.read_text().strip() != feature_set_hash():
+            return True
     except OSError:
         return True
+    if model_path:
+        try:
+            import joblib
+            blob = joblib.load(model_path)
+            if list(blob.get("features") or []) != list(FEATURES):
+                return True
+            if blob.get("builder_version") != BUILDER_VERSION:
+                return True
+        except Exception:
+            return True
+    return False
 
 
 def mark_model_retrained():
@@ -438,7 +449,7 @@ def ensure_model_current(cfg: dict, ml: SetupML, store: Store = None,
     refresh job, bar-close watcher, analyze CLI) — only one retrain runs at
     a time; concurrent callers proceed with the old model (predictions
     degrade gracefully to None until the retrain lands)."""
-    if not ml.loaded or not model_needs_retrain():
+    if not ml.loaded or not model_needs_retrain(ml.model_path):
         return False
     if symbols is None:   # default: the enabled/selected symbols, not just config.yaml
         symbols = cfg.get("_resolved_symbols") or list(cfg.get("symbols", []))

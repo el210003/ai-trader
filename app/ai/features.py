@@ -16,21 +16,18 @@ FEATURES = [
     "sweep_recency",       # 0 = sweep just happened, 1 = old/none
     "confluence_count",    # number of SMC confluences
     "zone_freshness",      # 1 = zone just formed, 0 = old
-    "is_order_block",      # 1 if entry zone is an order block (vs FVG)
     "trend_alignment",     # 1 if structure trend matches direction
     "hour_sin",            # time-of-day encoding (session effects)
     "hour_cos",
 
     # ----- per-symbol context (4) -----
     "symbol_avg_atr_pct",      # mean volatility of this pair (near-constant per symbol)
-    "symbol_setup_density",    # high-vol / trending signal (inverse bars-per-ATR)
     "symbol_recent_win_rate",  # rolling win rate over recent setups (None on cold-start)
     "symbol_avg_rr_realized",  # mean realized RR on this pair (None on cold-start)
 
     # ----- MTF confluence (4) — H1/H4 context projected onto the entry TF -----
     "htf_trend_align",         # mean(1 HTF trend matches direction, 0 opposed); 0.5 = no ctx
     "htf_pd_alignment",        # mean(1 entry in correct HTF premium/discount half)
-    "entry_in_htf_zone",       # 1 entry zone overlaps/near a same-direction HTF zone
     "htf_tp_distance_atr",     # entry -> nearest HTF liquidity pool (ATR units, cap 20)
 ]
 

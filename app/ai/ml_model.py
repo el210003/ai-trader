@@ -14,6 +14,11 @@ import numpy as np
 
 from .features import FEATURES, feature_vector
 
+# bump when setup-construction behavior changes (retest buffer, validity
+# window, gates...) - when it changes, deployed models auto-retrain to stay
+# aligned with the setup distribution they predict.
+BUILDER_VERSION = "v3-entry-validity"
+
 
 def _build_model(backend: str):
     """Build (model, backend_used). xgboost tries CUDA first, falls back to
@@ -41,6 +46,7 @@ class SetupML:
         self.trained_at = None
         self.env = None
         self.backend = None
+        self.calibrator = None
 
     @property
     def loaded(self) -> bool:
@@ -70,6 +76,7 @@ class SetupML:
                 self.metrics = blob.get("metrics")
                 self.trained_at = blob.get("trained_at")
                 self.env = blob.get("env")
+                self.calibrator = blob.get("calibrator")
                 return True
             except Exception:
                 self.model = None
@@ -78,14 +85,21 @@ class SetupML:
         return False
 
     def predict(self, feats: dict):
-        """Return P(win) in [0,1] or None when no model is available."""
+        """Return calibrated P(win) in [0,1] or None when no model is available."""
         if self.model is None:
             return None
         x = np.array([feature_vector(feats)], dtype=float)
         try:
-            return float(self.model.predict_proba(x)[0, 1])
+            p = float(self.model.predict_proba(x)[0, 1])
         except Exception:
             return None
+        if self.calibrator is not None:
+            try:
+                p = float(self.calibrator.predict(np.array([[p]]))[0])
+                p = min(1.0, max(0.0, p))
+            except Exception:
+                pass
+        return p
 
     def train(self, rows: list, labels: list, min_samples: int = 60,
               backend: str = "sklearn") -> dict:
@@ -135,6 +149,21 @@ class SetupML:
             pass
 
         self.model = model
+        # probability calibration: fit an isotonic calibrator on OUT-OF-FOLD
+        # predictions (so the calibrator isn't learned on the same data the
+        # model saw) -> probabilities become honest.  Skip on tiny datasets.
+        self.calibrator = None
+        try:
+            if len(y) >= 120:
+                from sklearn.model_selection import cross_val_predict
+                from sklearn.isotonic import IsotonicRegression
+                cv_prob = cross_val_predict(model, X, y, cv=5, method="predict_proba")[:, 1]
+                cal = IsotonicRegression(out_of_bounds="clip")
+                cal.fit(cv_prob, y)
+                self.calibrator = cal
+                metrics["calibration"] = "isotonic"
+        except Exception:
+            self.calibrator = None
         self.metrics = metrics
         self.trained_at = int(time.time())
         self.env = {"numpy": np.__version__,
@@ -150,5 +179,6 @@ class SetupML:
         Path(self.model_path).parent.mkdir(parents=True, exist_ok=True)
         joblib.dump({"model": model, "features": FEATURES, "metrics": metrics,
                      "trained_at": self.trained_at, "env": self.env,
-                     "backend": backend_used}, self.model_path)
+                     "backend": backend_used, "calibrator": self.calibrator,
+                     "builder_version": BUILDER_VERSION}, self.model_path)
         return metrics
