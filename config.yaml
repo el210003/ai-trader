@@ -73,6 +73,11 @@ ai:
     label_step: 4            # step between historical setup samples during training
     warmup_bars: 300         # history required before generating training setups
     min_train_samples: 60
+    backend: sklearn         # sklearn (fastest at typical sizes) | xgboost
+                             # xgboost uses CUDA on your RTX GPU but only wins
+                             # at large row counts (100k+ blended outcomes)
+    parallel: true           # replay symbols in parallel worker processes
+    workers: 0               # 0 = auto (CPU cores - 1, capped at 8)
     live_outcomes:          # tier-3: blend resolved live outcomes into training
       enabled: true         # trains blended vs replay-only, keeps better cv_auc
       min_samples: 200      # do not blend below this many resolved live outcomes

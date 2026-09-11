@@ -415,6 +415,83 @@ def retrain_if_stale(cfg: dict, symbols: list = None, verbose: bool = True) -> b
     return True
 
 
+def _replay_symbol(symbol: str, tfs: list, store, cfg: dict,
+                   warmup: int, horizon: int, step: int) -> dict:
+    """Replay one symbol's history: build setups per step, label outcomes,
+    collect feature rows. Module-level so ProcessPoolExecutor can pickle it
+    (tier-parallel replay). Returns rows/labels/replay_ids/made/skip_msgs."""
+    from .engine.labeler import label_setup
+
+    rows, labels, rids = [], [], set()
+    history_by_pair: dict = {}
+    made: dict = {}
+    skip_msgs: list = []
+    symbol_stats = SymbolStats()
+    mtf_on = cfg.get("mtf", {}).get("enabled", True)
+
+    for tf in tfs:
+        df = store.load_candles(symbol, tf)
+        if df is None or len(df) < warmup + horizon + 10:
+            skip_msgs.append(f"  [skip] {symbol} {tf}: "
+                             f"only {0 if df is None else len(df)} bars")
+            continue
+        n = len(df)
+        static = symbol_stats.static_features(df, symbol)
+        history = history_by_pair.setdefault((symbol, tf), [])
+        df_cache: dict = {}     # (symbol, htf) -> full HTF frame
+        ctx_cache: dict = {}    # (symbol, htf) last closed HTF bar -> ctx
+        made[tf] = 0
+        for i in range(warmup, n - horizon - 1, step):
+            sub = df.iloc[:i + 1].reset_index(drop=True)
+            try:
+                smc = smc_mod.analyze(sub, cfg["smc"])
+                htf_ctx = build_htf_context(symbol, tf, cfg,
+                                            up_to_time=int(sub["time"].iat[-1]),
+                                            load_df=store.load_candles,
+                                            df_cache=df_cache,
+                                            ctx_cache=ctx_cache) if mtf_on else {}
+                setups = build_setups(symbol, tf, sub, smc, cfg["smc"],
+                                      htf_ctx=htf_ctx,
+                                      mtf_cfg=cfg.get("mtf", {}))
+            except Exception:
+                continue
+            # dynamic features: only outcomes that formed before i (no look-ahead)
+            prior = [h for h in history if h["formed_index"] < i]
+            dynamic = symbol_stats.dynamic_features(prior)
+            for s in setups:
+                y = label_setup(df, s, horizon)
+                if y is None:
+                    continue
+                s["features"] = make_features(sub, s, smc, cfg["smc"],
+                                              symbol_static=static,
+                                              symbol_dynamic=dynamic,
+                                              htf_ctx=htf_ctx)
+                rows.append(s["features"])
+                labels.append(y)
+                rids.add((symbol, tf, int(s["formed_at"]), s["direction"]))
+                history.append({
+                    "formed_index": s["formed_index"],
+                    "horizon_end_index": min(s["formed_index"] + horizon, n - 1),
+                    "label": y,
+                    "realized_rr": (abs(s["take_profit"] - s["entry"]) /
+                                    max(abs(s["entry"] - s["stop_loss"]), 1e-9))
+                    if y == 1 else -1.0,
+                })
+                made[tf] += 1
+    return {"symbol": symbol, "rows": rows, "labels": labels, "replay_ids": rids,
+            "made": made, "skip_msgs": skip_msgs}
+
+
+def _replay_worker(payload):
+    """ProcessPoolExecutor entry: opens its own Store in the child process."""
+    symbol, tfs, storage_path, cfg, warmup, horizon, step = payload
+    store = Store(storage_path)
+    try:
+        return _replay_symbol(symbol, tfs, store, cfg, warmup, horizon, step)
+    finally:
+        store.close()
+
+
 def train(cfg: dict, store: Store = None, demo: bool = False,
           symbols: list = None, save_baseline: bool = False,
           compare: bool = False, verbose: bool = True) -> dict:
@@ -437,61 +514,48 @@ def train(cfg: dict, store: Store = None, demo: bool = False,
 
     rows, labels = [], []
     replay_ids: set = set()      # (symbol, tf, formed_at, direction) — tier-3 dedup
-    history_by_pair: dict = {}   # (symbol, tf) -> list of prior outcomes
 
-    for symbol in sym_list:
-        for tf in cfg["timeframes"]:
-            df = store.load_candles(symbol, tf)
-            if len(df) < warmup + horizon + 10:
-                if verbose:
-                    print(f"  [skip] {symbol} {tf}: only {len(df)} bars")
-                continue
-            n = len(df)
-            static = symbol_stats.static_features(df, symbol)
-            history = history_by_pair.setdefault((symbol, tf), [])
-            mtf_on = cfg.get("mtf", {}).get("enabled", True)
-            df_cache: dict = {}     # (symbol, htf) -> full HTF frame
-            ctx_cache: dict = {}    # (symbol, htf) last closed HTF bar -> ctx
-            made = 0
-            for i in range(warmup, n - horizon - 1, step):
-                sub = df.iloc[:i + 1].reset_index(drop=True)
-                try:
-                    smc = smc_mod.analyze(sub, cfg["smc"])
-                    htf_ctx = build_htf_context(symbol, tf, cfg,
-                                                up_to_time=int(sub["time"].iat[-1]),
-                                                load_df=store.load_candles,
-                                                df_cache=df_cache,
-                                                ctx_cache=ctx_cache) if mtf_on else {}
-                    setups = build_setups(symbol, tf, sub, smc, cfg["smc"],
-                                          htf_ctx=htf_ctx,
-                                          mtf_cfg=cfg.get("mtf", {}))
-                except Exception:
-                    continue
-                # dynamic features: only outcomes that formed before i (no look-ahead)
-                prior = [h for h in history if h["formed_index"] < i]
-                dynamic = symbol_stats.dynamic_features(prior)
-                for s in setups:
-                    y = label_setup(df, s, horizon)
-                    if y is None:
-                        continue
-                    s["features"] = make_features(sub, s, smc, cfg["smc"],
-                                                  symbol_static=static,
-                                                  symbol_dynamic=dynamic,
-                                                  htf_ctx=htf_ctx)
-                    rows.append(s["features"])
-                    labels.append(y)
-                    replay_ids.add((symbol, tf, int(s["formed_at"]), s["direction"]))
-                    history.append({
-                        "formed_index": s["formed_index"],
-                        "horizon_end_index": min(s["formed_index"] + horizon, n - 1),
-                        "label": y,
-                        "realized_rr": (abs(s["take_profit"] - s["entry"]) /
-                                        max(abs(s["entry"] - s["stop_loss"]), 1e-9))
-                        if y == 1 else -1.0,
-                    })
-                    made += 1
+    # ---- replay: serial or parallel across symbols (the dominant training cost)
+    parallel = bool(ml_cfg.get("parallel", True)) and len(sym_list) > 1
+    workers = int(ml_cfg.get("workers") or 0)
+    t_replay = time.time()
+    if parallel:
+        import os as _os
+        from concurrent.futures import ProcessPoolExecutor
+        n_workers = workers if workers > 0 else max(1, min((_os.cpu_count() or 2) - 1, 8))
+        if verbose:
+            print(f"  replaying {len(sym_list)} symbols on {n_workers} workers...")
+        try:
+            payloads = [(sym, list(cfg["timeframes"]), cfg["storage"]["path"], cfg,
+                         warmup, horizon, step) for sym in sym_list]
+            with ProcessPoolExecutor(max_workers=n_workers) as ex:
+                for res in ex.map(_replay_worker, payloads):
+                    rows.extend(res["rows"])
+                    labels.extend(res["labels"])
+                    replay_ids.update(res["replay_ids"])
+                    if verbose:
+                        for msg in res["skip_msgs"]:
+                            print(msg)
+                        for tf, m in res["made"].items():
+                            print(f"  {res['symbol']} {tf}: {m} labeled setups")
+        except Exception as e:
             if verbose:
-                print(f"  {symbol} {tf}: {made} labeled setups")
+                print(f"  [warn] parallel replay failed ({e}) -- falling back to serial")
+            parallel = False
+    if not parallel:
+        for symbol in sym_list:
+            res = _replay_symbol(symbol, list(cfg["timeframes"]), store, cfg,
+                                 warmup, horizon, step)
+            rows.extend(res["rows"])
+            labels.extend(res["labels"])
+            replay_ids.update(res["replay_ids"])
+            if verbose:
+                for msg in res["skip_msgs"]:
+                    print(msg)
+                for tf, m in res["made"].items():
+                    print(f"  {symbol} {tf}: {m} labeled setups")
+    if verbose:
+        print(f"  replay done: {len(rows)} samples in {time.time() - t_replay:.1f}s")
 
     if not rows:
         raise RuntimeError("no labeled setups generated")
@@ -516,8 +580,10 @@ def train(cfg: dict, store: Store = None, demo: bool = False,
             live_rows, live_labels = [], []
 
     ml = SetupML(ml_cfg["model_path"])
+    backend = str(ml_cfg.get("backend", "sklearn"))
     all_rows, all_labels = rows + live_rows, labels + live_labels
-    metrics = ml.train(all_rows, all_labels, min_samples=int(ml_cfg["min_train_samples"]))
+    metrics = ml.train(all_rows, all_labels, min_samples=int(ml_cfg["min_train_samples"]),
+                       backend=backend)
     if live_rows:
         metrics["n_live"] = len(live_rows)
         # keep the better of blended vs replay-only by cv_auc
@@ -537,7 +603,7 @@ def train(cfg: dict, store: Store = None, demo: bool = False,
                 if verbose:
                     print(f"  [live-blend] replay-only cv_auc {auc0:.3f} beats blended "
                           f"{metrics['cv_auc']:.3f} -- retraining on replay only")
-                metrics = ml.train(rows, labels, min_samples=int(ml_cfg["min_train_samples"]))
+                metrics = ml.train(rows, labels, min_samples=int(ml_cfg["min_train_samples"]), backend=backend)
                 metrics["n_live"] = 0
                 metrics["cv_auc_replay_only"] = round(auc0, 3)
         except Exception:

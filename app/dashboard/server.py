@@ -67,26 +67,33 @@ def create_app(cfg: dict) -> FastAPI:
     # bar-close watcher: cheap 2-bar peek per pair; analyze a pair the moment
     # its bar CLOSES, using only confirmed bars (matches training semantics)
     if bar_close:
+        watch = {"last_poll_done": time.time()}
         def _bar_watcher():
             from ..data import mt5_client as _m5
             mt5 = None
             last_seen = {}          # (symbol, tf) -> last seen forming-bar open time
             bootstrapped = False
             in_flight = set()       # pairs currently being analyzed
+            fail_streak = 0         # consecutive polls with zero readable symbols
+            pair_fail_at = {}       # (symbol, tf) -> last failure time (retry cooldown)
+            last_hb = 0.0
             while True:
                 try:
                     if mt5 is None and not demo_mode:
                         mt5 = _m5.connect_mt5(cfg["mt5"])
                     triggers = []
+                    peeked = 0
                     for symbol in visible_symbols():
                         for tf in cfg["timeframes"]:
                             key = (symbol, tf)
                             try:
                                 t = pipeline.peek_last_bar_time(symbol, tf, demo=demo_mode, mt5=mt5)
-                            except Exception:
+                            except Exception as e:
                                 t = None
+                                debug(f"watcher peek failed {symbol} {tf}: {e}")
                             if t is None:
                                 continue
+                            peeked += 1
                             prev = last_seen.get(key)
                             if prev is None:
                                 last_seen[key] = t
@@ -107,6 +114,8 @@ def create_app(cfg: dict) -> FastAPI:
                             busy = state["running"] or state["retraining"]
                         if busy or key in in_flight or len(in_flight) >= 3:
                             continue        # last_seen not advanced -> retried next poll
+                        if time.time() - pair_fail_at.get(key, 0) < 60:
+                            continue        # failed recently -> cooldown before retry
                         last_seen[key] = t_new          # claim this bar
                         in_flight.add(key)
                         def _work(symbol=symbol, tf=tf, t_new=t_new):
@@ -127,6 +136,8 @@ def create_app(cfg: dict) -> FastAPI:
                             except Exception as e:
                                 state["last_error"] = f"bar-close {symbol} {tf}: {e}"
                                 last_seen[(symbol, tf)] = -1   # force retry next poll
+                                pair_fail_at[(symbol, tf)] = time.time()  # + 60s cooldown
+                                debug(f"bar-close {symbol} {tf} FAILED: {e}")
                             finally:
                                 in_flight.discard((symbol, tf))
                         threading.Thread(target=_work, daemon=True).start()
@@ -143,13 +154,46 @@ def create_app(cfg: dict) -> FastAPI:
                             state["last_error"] = f"outcome resolve: {e}"
                 except Exception as e:
                     state["last_error"] = f"bar watcher: {e}"
+                    debug(f"bar watcher poll error: {e}")
                     try:
                         _m5.shutdown_mt5(mt5)
                     except Exception:
                         pass
-                    mt5 = None                     # reconnect next cycle
+                    mt5 = None                     # dead IPC -> force fresh reconnect
+                # self-heal: 3+ polls with zero readable symbols -> reconnect MT5
+                if peeked == 0 and not demo_mode:
+                    fail_streak += 1
+                    if fail_streak >= 3:
+                        debug(f"watcher: {fail_streak} polls with no readable symbols "
+                              f"-- forcing MT5 reconnect")
+                        try:
+                            _m5.shutdown_mt5(mt5)
+                        except Exception:
+                            pass
+                        mt5 = None
+                        fail_streak = 0
+                else:
+                    fail_streak = 0
+                if time.time() - watch["last_poll_done"] > 60:
+                    debug(f"previous watcher poll took "
+                          f"{time.time() - watch['last_poll_done']:.0f}s (MT5 blocking?)")
+                watch["last_poll_done"] = time.time()
+                if time.time() - last_hb > 120:
+                    debug(f"watcher alive: peeked {peeked} pairs, "
+                          f"{len(in_flight)} analyzing")
+                    last_hb = time.time()
                 time.sleep(bar_poll)
+        def _watchdog():
+            """The MT5 python API blocks without timeout — if the poll loop hangs,
+            this makes it visible instead of silent."""
+            while True:
+                time.sleep(60)
+                gap = time.time() - watch["last_poll_done"]
+                if gap > 120:
+                    debug(f"WARNING: bar watcher has not completed a poll for {gap:.0f}s "
+                          f"-- an MT5 call is likely blocking; restart serve.bat to recover")
         threading.Thread(target=_bar_watcher, daemon=True).start()
+        threading.Thread(target=_watchdog, daemon=True).start()
 
     def _refresh_job(demo: bool):
         try:

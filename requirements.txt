@@ -7,3 +7,6 @@ fastapi>=0.110.0
 uvicorn>=0.29.0
 pyyaml>=6.0
 requests>=2.31.0
+
+# optional GPU backend (ai.ml.backend: xgboost) — only wins at 100k+ rows
+xgboost>=2.0

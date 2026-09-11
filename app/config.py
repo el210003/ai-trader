@@ -43,6 +43,9 @@ DEFAULTS = {
             "label_step": 4,
             "warmup_bars": 300,
             "min_train_samples": 60,
+            "backend": "sklearn",
+            "parallel": True,
+            "workers": 0,
             "auto_retrain": {
                 "enabled": True,
                 "max_age_days": 7,

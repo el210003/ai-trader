@@ -1,4 +1,9 @@
-"""ML win-probability model for trade setups (hist gradient boosting)."""
+"""ML win-probability model for trade setups (hist gradient boosting).
+
+Backends: sklearn HistGradientBoosting (default, fastest at typical data
+sizes) or XGBoost with optional CUDA (opt-in via ai.ml.backend: xgboost —
+only wins at large row counts, e.g. 100k+ blended live outcomes).
+The trained blob records the backend so predictions always match."""
 import os
 import platform
 import time
@@ -10,6 +15,24 @@ import numpy as np
 from .features import FEATURES, feature_vector
 
 
+def _build_model(backend: str):
+    """Build (model, backend_used). xgboost tries CUDA first, falls back to
+    CPU automatically (the fit call is where a missing GPU surfaces)."""
+    if backend == "xgboost":
+        from xgboost import XGBClassifier
+        params = dict(n_estimators=250, max_depth=4, learning_rate=0.06,
+                      min_child_weight=10, reg_lambda=1.0, random_state=42,
+                      tree_method="hist", eval_metric="logloss", n_jobs=4)
+        try:
+            return XGBClassifier(**params, device="cuda"), "xgboost-cuda"
+        except Exception:
+            return XGBClassifier(**params, device="cpu"), "xgboost-cpu"
+    from sklearn.ensemble import HistGradientBoostingClassifier
+    return (HistGradientBoostingClassifier(
+        max_iter=250, max_depth=4, learning_rate=0.06,
+        min_samples_leaf=10, l2_regularization=1.0, random_state=42), "sklearn")
+
+
 class SetupML:
     def __init__(self, model_path: str):
         self.model_path = model_path
@@ -17,6 +40,7 @@ class SetupML:
         self.metrics = None
         self.trained_at = None
         self.env = None
+        self.backend = None
 
     @property
     def loaded(self) -> bool:
@@ -63,8 +87,8 @@ class SetupML:
         except Exception:
             return None
 
-    def train(self, rows: list, labels: list, min_samples: int = 60) -> dict:
-        from sklearn.ensemble import HistGradientBoostingClassifier
+    def train(self, rows: list, labels: list, min_samples: int = 60,
+              backend: str = "sklearn") -> dict:
         from sklearn.model_selection import cross_val_score
 
         if len(rows) < min_samples:
@@ -75,11 +99,16 @@ class SetupML:
         X = np.array([feature_vector(r) for r in rows], dtype=float)
         y = np.array(labels, dtype=int)
 
-        model = HistGradientBoostingClassifier(
-            max_iter=250, max_depth=4, learning_rate=0.06,
-            min_samples_leaf=10, l2_regularization=1.0, random_state=42,
-        )
-        model.fit(X, y)
+        model, backend_used = _build_model(backend)
+        try:
+            model.fit(X, y)
+        except Exception:
+            if backend_used == "xgboost-cuda":   # no usable GPU -> CPU fallback
+                model, backend_used = _build_model("xgboost-cpu")
+                model.fit(X, y)
+            else:
+                raise
+        self.backend = backend_used
 
         # Train a fresh model on the same data with permutation importance so
         # we have a real feature ranking (HGB has no native importances_).
@@ -110,8 +139,16 @@ class SetupML:
         self.trained_at = int(time.time())
         self.env = {"numpy": np.__version__,
                     "sklearn": __import__("sklearn").__version__,
-                    "python": platform.python_version()}
+                    "python": platform.python_version(),
+                    "backend": backend_used}
+        if backend_used.startswith("xgboost"):
+            try:
+                import xgboost
+                self.env["xgboost"] = xgboost.__version__
+            except Exception:
+                pass
         Path(self.model_path).parent.mkdir(parents=True, exist_ok=True)
         joblib.dump({"model": model, "features": FEATURES, "metrics": metrics,
-                     "trained_at": self.trained_at, "env": self.env}, self.model_path)
+                     "trained_at": self.trained_at, "env": self.env,
+                     "backend": backend_used}, self.model_path)
         return metrics
