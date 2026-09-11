@@ -112,6 +112,7 @@ main{flex:1;display:grid;grid-template-columns:1fr 460px;min-height:0}
 .mtf-chip.up{color:var(--green);border-color:rgba(45,212,167,.3)}
 .mtf-chip.dn{color:var(--red);border-color:rgba(242,95,92,.3)}
 .mtf-chip.rg{color:var(--amber);border-color:rgba(245,184,61,.25)}
+.mtf-chip.na{color:var(--dim);border-color:var(--border);cursor:default}
 .mtf-chip.cur{outline:1px solid var(--accent);background:rgba(57,208,195,.08)}
 
 /* ---------- journal outcome badges + perf tables ---------- */
@@ -694,11 +695,14 @@ function renderStructure(){
     const chips = state.mtfStatus || {};
     const tfs = (state.meta?.timeframes || Object.keys(chips));
     const rows = tfs.map(tf => {
-      const st = chips[tf] || {};
-      const s = st.status || '—';
+      const st = chips[tf];
+      const cur = a && a.tf === tf ? ' cur' : '';
+      if (!st || !st.status){   // endpoint unavailable (old server) or no analysis yet
+        return `<span class="mtf-chip na${cur}" title="MTF status unavailable — restart serve.bat to enable it (or no analysis stored yet for this timeframe)">${tf} ·</span>`;
+      }
+      const s = st.status;
       const arr = s === 'bullish' ? '▲' : s === 'bearish' ? '▼' : '▬';
       const cls = s === 'bullish' ? 'up' : s === 'bearish' ? 'dn' : 'rg';
-      const cur = a && a.tf === tf ? ' cur' : '';
       const tip = `${tf}: ${s}` +
         (st.age != null ? ` · last BOS/CHoCH ${st.age} bars ago` : ' · no structure events') +
         (st.median_gap != null ? ` (typical gap ~${st.median_gap})` : '') +
