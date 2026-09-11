@@ -18,3 +18,4 @@ serve.bat
 Thumbs.db
 .DS_Store
 logs/
+_test_*.py
