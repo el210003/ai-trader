@@ -435,6 +435,33 @@ def create_app(cfg: dict) -> FastAPI:
         return {"rows": rows,
                 "stats": store.outcome_stats(symbol, tf)}
 
+    @app.get("/api/mtf_status")
+    def mtf_status(symbol: str):
+        """Per-timeframe structure status for one symbol (bullish/bearish/range)
+        from the stored analyses. 'range' = no structure event, or the last
+        BOS/CHoCH is older than 20 bars on that timeframe."""
+        out = {}
+        for tf in cfg["timeframes"]:
+            p = store.load_analysis(symbol, tf)
+            if not p:
+                out[tf] = {"status": "—", "trend": None, "age": None}
+                continue
+            smc = p.get("smc") or {}
+            events = smc.get("events") or []
+            n_bars = (p.get("meta") or {}).get("bars") or 0
+            last = events[-1] if events else None
+            age = None
+            if last and isinstance(last.get("index"), int) and n_bars:
+                age = max(0, n_bars - 1 - last["index"])
+            trend = smc.get("trend")
+            status = trend if trend in ("bullish", "bearish") else "range"
+            if age is not None and age > 20:
+                status = "range"       # last structure event is stale
+            dr = smc.get("dealing_range") or {}
+            out[tf] = {"status": status, "trend": trend, "age": age,
+                       "zone": dr.get("zone"), "position": dr.get("position")}
+        return out
+
     @app.get("/api/outcomes/stats")
     def outcomes_stats(symbol: str = None, tf: str = None):
         """Aggregated setup-effectiveness views (Performance tab)."""

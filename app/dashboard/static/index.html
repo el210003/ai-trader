@@ -105,6 +105,14 @@ main{flex:1;display:grid;grid-template-columns:1fr 460px;min-height:0}
 .tr b{color:var(--text);font-weight:700}
 .tr .what{color:var(--muted)}
 .tr .when{margin-left:auto;color:var(--dim);font-family:var(--mono);font-size:8.5px}
+.mtf-row{display:flex;gap:5px;align-items:center;margin:8px 0 10px;flex-wrap:wrap}
+.mtf-lbl{font-size:8px;font-weight:800;letter-spacing:1.2px;color:var(--dim);margin-right:2px}
+.mtf-chip{font-size:9.5px;font-weight:700;padding:3px 9px;border-radius:8px;border:1px solid var(--border2);cursor:pointer;background:rgba(255,255,255,.02);transition:background .15s}
+.mtf-chip:hover{background:rgba(255,255,255,.06)}
+.mtf-chip.up{color:var(--green);border-color:rgba(45,212,167,.3)}
+.mtf-chip.dn{color:var(--red);border-color:rgba(242,95,92,.3)}
+.mtf-chip.rg{color:var(--amber);border-color:rgba(245,184,61,.25)}
+.mtf-chip.cur{outline:1px solid var(--accent);background:rgba(57,208,195,.08)}
 
 /* ---------- journal outcome badges + perf tables ---------- */
 .o-badge{font-size:8.5px;font-weight:700;padding:1px 6px;border-radius:6px;letter-spacing:.3px;flex:none}
@@ -490,7 +498,7 @@ footer{padding:6px 16px;font-size:11px;color:var(--muted);border-top:1px solid v
 <script>
 const state = { meta:null, data:null, series:null, chart:null, priceLines:[], pricePrecision:null,
                 allSymbols:[], filterText:'', settingsPending:new Set(), settingsOriginal:new Set(),
-                journalLoaded:false, csm:null, csmHidden:false };
+                journalLoaded:false, csm:null, csmHidden:false, mtfStatus:null };
 const CCY_COLORS = {EUR:'#2962ff', USD:'#ff5252', GBP:'#ff9800', AUD:'#4caf50',
                     NZD:'#00e676', CAD:'#9c27b0', CHF:'#e05252', JPY:'#00bcd4'};
 function fmtJ(p){
@@ -681,7 +689,23 @@ function barsAgo(analysis, index){ return Math.max(0, (analysis.meta?.bars || 0)
 function renderStructure(){
   const el = $('structureCard');
   const a = state.data?.analysis;
-  if (!a){ el.innerHTML = '<h3 style="font-size:10.5px;font-weight:700;letter-spacing:1.4px;text-transform:uppercase;color:var(--muted)">Market Structure</h3><div class="empty">no analysis yet — hit "Run analysis"</div>'; return; }
+  const mtfHead = (a) => {
+    const chips = state.mtfStatus || {};
+    const tfs = (state.meta?.timeframes || Object.keys(chips));
+    const rows = tfs.map(tf => {
+      const st = chips[tf] || {};
+      const s = st.status || '—';
+      const arr = s === 'bullish' ? '▲' : s === 'bearish' ? '▼' : '▬';
+      const cls = s === 'bullish' ? 'up' : s === 'bearish' ? 'dn' : 'rg';
+      const cur = a && a.tf === tf ? ' cur' : '';
+      const tip = `${tf}: ${s}` +
+        (st.age != null ? ` · last BOS/CHoCH ${st.age} bars ago` : ' · no structure events') +
+        (st.zone ? ` · price in ${st.zone} half` : '');
+      return `<span class="mtf-chip ${cls}${cur}" title="${esc(tip)} — click to open this timeframe" onclick="switchTf('${tf}')">${tf} ${arr}</span>`;
+    }).join('');
+    return `<div class="mtf-row"><span class="mtf-lbl">MTF</span>${rows}</div>`;
+  };
+  if (!a){ el.innerHTML = '<h3 style="font-size:10.5px;font-weight:700;letter-spacing:1.4px;text-transform:uppercase;color:var(--muted)">Market Structure</h3>' + mtfHead(null) + '<div class="empty">no analysis yet — hit "Run analysis"</div>'; return; }
   const s = a.smc, dr = s.dealing_range;
   const lastEv = (s.events||[]).slice(-1)[0];
   const lastSweep = (s.sweeps||[]).slice(-1)[0];
@@ -689,6 +713,7 @@ function renderStructure(){
   const trendArrow = s.trend === 'bullish' ? '▲' : s.trend === 'bearish' ? '▼' : '▬';
   el.innerHTML = `
     <div class="card-h"><span class="ic">◈</span><h3>Market Structure</h3><span class="sub">${esc(a.symbol)} · ${esc(a.tf)}</span></div>
+    ${mtfHead(a)}
     <div class="trend-row">
       <span class="trend-pill ${s.trend}">${trendArrow} ${s.trend.toUpperCase()}</span>
       ${lastEv ? `<span class="trend-note">last: <b>${esc(lastEv.type.toUpperCase())}</b> @ ${fp(lastEv.level)}</span>` : ''}
@@ -925,6 +950,23 @@ function updateStamp(s){
   el.innerHTML = `pull <b>${fmtStamp(p)}</b> · analyzed <b>${fmtStamp(a)}</b>`;
   el.title = `last bar pull from MT5: ${fmtStamp(p)}\nlast SMC+ML+LLM analysis: ${fmtStamp(a)}`;
 }
+function switchTf(tf){
+  const sel = $('tfSel');
+  if (![...sel.options].some(o => o.value === tf)) return;
+  sel.value = tf;
+  loadAnalysis();
+}
+
+async function loadMtfStatus(){
+  try{
+    const sym = $('symbolSel').value;
+    if (!sym) return;
+    const r = await fetch(`/api/mtf_status?symbol=${encodeURIComponent(sym)}`);
+    state.mtfStatus = await r.json();
+    renderStructure();
+  }catch(e){ /* chips keep last known state */ }
+}
+
 function setStatus(kind, text){
   $('statusDot').className = 'dot ' + (kind||'');
   $('statusText').textContent = text;
@@ -940,7 +982,7 @@ async function pollStatus(){
   else if (s.last_run && s.last_run.bar_close){ setStatus('ok', `bar closed ${s.last_run.bar_close} → updated ${new Date(s.last_run.at*1000).toLocaleTimeString()}`); }
   else if (s.last_run){ setStatus('ok', `updated ${new Date(s.last_run.at*1000).toLocaleTimeString()} (${s.last_run.analyses} pairs)`); }
   state.journalLoaded = false;   // new analysis -> journal changed
-  await loadMeta(); await loadAnalysis(); await loadCsm();
+  await loadMeta(); await loadAnalysis(); await loadMtfStatus(); await loadCsm();
   if (document.getElementById('viewJournal').style.display !== 'none') loadJournal();
   if (document.getElementById('viewRanked').style.display !== 'none') loadRanked();
 }
@@ -1372,6 +1414,7 @@ $('autoRefresh').onchange = setupAuto;
   initChart();
   try{ await loadMeta(); }catch(e){ setStatus('err','server unreachable'); return; }
   await loadAnalysis();
+  await loadMtfStatus();
   await loadCsm();
   setupAuto();
   // deep-link tabs: #ranked / #journal
