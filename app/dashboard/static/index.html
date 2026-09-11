@@ -175,6 +175,7 @@ aside::-webkit-scrollbar-thumb{background:var(--border2);border-radius:4px}
 .trend-pill.bullish{color:var(--green);background:var(--green-dim);border:1px solid rgba(45,212,167,.4);box-shadow:0 0 14px rgba(45,212,167,.12)}
 .trend-pill.bearish{color:var(--red);background:var(--red-dim);border:1px solid rgba(242,95,92,.4)}
 .trend-pill.neutral{color:var(--muted);background:rgba(135,146,166,.08);border:1px solid var(--border2)}
+.trend-pill.range{color:var(--amber);background:rgba(245,184,61,.08);border:1px solid rgba(245,184,61,.4)}
 .trend-note{font-size:11px;color:var(--dim)}
 .trend-note b{color:var(--text);font-weight:600}
 
@@ -711,12 +712,19 @@ function renderStructure(){
   const lastSweep = (s.sweeps||[]).slice(-1)[0];
   const posPct = ((dr?.position ?? .5)*100).toFixed(1);
   const trendArrow = s.trend === 'bullish' ? '▲' : s.trend === 'bearish' ? '▼' : '▬';
+  const mtfSelf = (state.mtfStatus||{})[a.tf] || {};
+  const structStatus = mtfSelf.status || s.trend || 'range';
+  const stale = structStatus === 'range' && (s.trend === 'bullish' || s.trend === 'bearish');
+  const pillCls = stale ? 'range' : (structStatus === 'bullish' ? 'bullish' : structStatus === 'bearish' ? 'bearish' : 'neutral');
+  const pillArrow = stale ? '▬' : trendArrow;
+  const pillTxt = stale ? `RANGE · last ${s.trend.toUpperCase()}` : String(structStatus).toUpperCase();
+  const staleNote = stale && mtfSelf.age != null ? ` · ${mtfSelf.age} bars without a new BOS/CHoCH` : '';
   el.innerHTML = `
     <div class="card-h"><span class="ic">◈</span><h3>Market Structure</h3><span class="sub">${esc(a.symbol)} · ${esc(a.tf)}</span></div>
     ${mtfHead(a)}
     <div class="trend-row">
-      <span class="trend-pill ${s.trend}">${trendArrow} ${s.trend.toUpperCase()}</span>
-      ${lastEv ? `<span class="trend-note">last: <b>${esc(lastEv.type.toUpperCase())}</b> @ ${fp(lastEv.level)}</span>` : ''}
+      <span class="trend-pill ${pillCls}" title="structure status incl. staleness: 'range' = the last BOS/CHoCH is older than 20 bars on this timeframe">${pillArrow} ${pillTxt}</span>
+      ${lastEv ? `<span class="trend-note">last: <b>${esc(lastEv.type.toUpperCase())}</b> @ ${fp(lastEv.level)}${staleNote}</span>` : `<span class="trend-note">no BOS/CHoCH in the analyzed window${staleNote}</span>`}
     </div>
     <div class="dr">
       <div class="dr-bar">
