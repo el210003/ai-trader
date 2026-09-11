@@ -163,7 +163,7 @@ HistGradientBoostingClassifier(
 )
 ```
 
-Conservative on purpose: with only ~hundreds-to-thousands of samples and 19 features,
+Conservative on purpose: with only ~hundreds-to-thousands of samples and 16 features,
 deep trees overfit fast.
 
 ### Training procedure
@@ -297,7 +297,7 @@ To set expectations:
 ## Inference flow
 
 ```
-SMC engine   → setup with 19 features
+SMC engine   → setup with 16 features
              → model.predict_proba(features)  →  P(win) in [0, 1]
                                                    ↓
 hybrid score = 0.6 * ml_score  +  0.4 * llm_confidence
@@ -348,7 +348,9 @@ venv).
   stop-loss in `labeler.py`.
 - **More features** — multi-timeframe alignment (HTF trend + LTF entry),
   session tags (London/NY/Asian), day-of-week, ATR ratio vs 20-bar MA.
-- **Calibration** — wrap the model in `sklearn.calibration.CalibratedClassifierCV`
+- **Calibration — implemented** (see docs/ml-model-review.md): an isotonic
+  calibrator fit on out-of-fold predictions, applied in predict() so the
+  probabilities are honest; the 0.30 ML gate and 60 threshold rely on it.
   to make `predict_proba` outputs more numerically trustworthy.
 - **Class balancing** — use `class_weight='balanced'` or SMOTE if win rate
   drops below 15%.
