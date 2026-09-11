@@ -894,7 +894,7 @@ function applySymbolFilter(){
   sel.innerHTML = filtered.map(s => `<option>${esc(s)}</option>`).join('');
   $('symbolCount').textContent = `${filtered.length}/${state.allSymbols.length}`;
   if (filtered.includes(current)) sel.value = current;
-  else if (filtered.length){ sel.value = filtered[0]; loadAnalysis(); }
+  else if (filtered.length){ sel.value = filtered[0]; loadAnalysis(); loadMtfStatus(); }
 }
 
 /* --------------------------------------------------------------- data */
@@ -1297,10 +1297,12 @@ function gotoSetup(symbol, tf){
     const opt = document.createElement('option'); opt.textContent = symbol; opt.value = symbol;
     sel.appendChild(opt);
   }
+  const symbolChanged = sel.value !== symbol;
   sel.value = symbol;
   $('tfSel').value = tf;
   showTab('setups');
   loadAnalysis();
+  if (symbolChanged) loadMtfStatus();   // programmatic change fires no onchange
 }
 
 /* ---------------------------------------------------------- settings modal */
