@@ -692,7 +692,8 @@ function renderStructure(){
   const el = $('structureCard');
   const a = state.data?.analysis;
   const mtfHead = (a) => {
-    const chips = state.mtfStatus || {};
+    const ms = state.mtfStatus;
+    const chips = (ms && a && ms.symbol === a.symbol) ? (ms.data || {}) : {};
     const tfs = (state.meta?.timeframes || Object.keys(chips));
     const rows = tfs.map(tf => {
       const st = chips[tf];
@@ -717,7 +718,8 @@ function renderStructure(){
   const lastSweep = (s.sweeps||[]).slice(-1)[0];
   const posPct = ((dr?.position ?? .5)*100).toFixed(1);
   const trendArrow = s.trend === 'bullish' ? '▲' : s.trend === 'bearish' ? '▼' : '▬';
-  const mtfSelf = (state.mtfStatus||{})[a.tf] || {};
+  const mtfSelf = (state.mtfStatus && state.mtfStatus.symbol === a.symbol)
+    ? ((state.mtfStatus.data || {})[a.tf] || {}) : {};
   const structStatus = mtfSelf.status || s.trend || 'range';
   const stale = structStatus === 'range' && (s.trend === 'bullish' || s.trend === 'bearish');
   const pillCls = stale ? 'range' : (structStatus === 'bullish' ? 'bullish' : structStatus === 'bearish' ? 'bearish' : 'neutral');
@@ -976,8 +978,12 @@ async function loadMtfStatus(){
     const sym = $('symbolSel').value;
     if (!sym) return;
     const r = await fetch(`/api/mtf_status?symbol=${encodeURIComponent(sym)}`);
-    state.mtfStatus = await r.json();
-    renderStructure();
+    const data = await r.json();
+    // only apply if the user hasn't switched symbols while we were fetching
+    if ($('symbolSel').value === sym){
+      state.mtfStatus = {symbol: sym, data};
+      renderStructure();
+    }
   }catch(e){ /* chips keep last known state */ }
 }
 
@@ -1363,7 +1369,7 @@ $('refreshBtn').onclick = async () => {
     else setStatus('err', j.message);
   } finally { setTimeout(()=>{$('refreshBtn').disabled=false;}, 800); }
 };
-$('symbolSel').onchange = loadAnalysis;
+$('symbolSel').onchange = () => { loadAnalysis(); loadMtfStatus(); };
 $('tfSel').onchange = loadAnalysis;
 $('retrainBtn').onclick = async () => {
   $('retrainBtn').disabled = true;
