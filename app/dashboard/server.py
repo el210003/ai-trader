@@ -73,7 +73,6 @@ def create_app(cfg: dict) -> FastAPI:
             mt5 = None
             last_seen = {}          # (symbol, tf) -> last seen forming-bar open time
             bootstrapped = False
-            in_flight = set()       # pairs currently being analyzed
             fail_streak = 0         # consecutive polls with zero readable symbols
             pair_fail_at = {}       # (symbol, tf) -> last failure time (retry cooldown)
             last_hb = 0.0
@@ -108,41 +107,76 @@ def create_app(cfg: dict) -> FastAPI:
                     if triggers:
                         debug("bar-close triggers: " + ", ".join(
                             f"{s} {tf}" for s, tf, _ in triggers))
+                    batch = []
                     for (symbol, tf, t_new) in triggers:
                         key = (symbol, tf)
                         with lock:
                             busy = state["running"] or state["retraining"]
-                        if busy or key in in_flight or len(in_flight) >= 3:
-                            continue        # last_seen not advanced -> retried next poll
+                        if busy:
+                            continue        # retried next poll
                         if time.time() - pair_fail_at.get(key, 0) < 60:
                             continue        # failed recently -> cooldown before retry
                         last_seen[key] = t_new          # claim this bar
-                        in_flight.add(key)
-                        def _work(symbol=symbol, tf=tf, t_new=t_new):
+                        batch.append((symbol, tf))
+                    if batch:
+                        t_b = time.time()
+                        debug(f"processing {len(batch)} bar-close pair(s): "
+                              + ", ".join(f"{s} {tf}" for s, tf in batch))
+                        state["last_pull"] = {"at": int(t_b)}
+                        # phase 1: pull fresh candles (sequential MT5 IPC)
+                        pull_fail = set()
+                        for symbol, tf in batch:
                             try:
-                                t0 = time.time()
-                                debug(f"bar-close {symbol} {tf}: pulling + analyzing...")
-                                state["last_pull"] = {"at": int(t0)}   # bar pull starts
-                                pipeline.refresh_pair(cfg, store, symbol, tf, mt5, ml, llm,
-                                                      symbol_stats, drop_forming_bar=True,
-                                                      demo=demo_mode)
-                                state["last_analysis"] = {"at": int(time.time())}
-                                state["last_run"] = {"at": int(time.time()), "analyses": 1,
-                                                     "seconds": round(time.time() - t0, 1),
-                                                     "bar_close": f"{symbol} {tf}"}
-                                state["last_error"] = None
-                                debug(f"bar-close {symbol} {tf}: done in "
-                                      f"{time.time() - t0:.1f}s")
+                                df = _m5.fetch_ohlcv(symbol, tf, int(cfg["data"]["bars"]),
+                                                     demo=demo_mode, cfg_mt5=cfg["mt5"], mt5=mt5)
+                                store.upsert_candles(df, symbol, tf)
                             except Exception as e:
-                                state["last_error"] = f"bar-close {symbol} {tf}: {e}"
-                                last_seen[(symbol, tf)] = -1   # force retry next poll
-                                pair_fail_at[(symbol, tf)] = time.time()  # + 60s cooldown
-                                debug(f"bar-close {symbol} {tf} FAILED: {e}")
-                            finally:
-                                in_flight.discard((symbol, tf))
-                        threading.Thread(target=_work, daemon=True).start()
+                                debug(f"pull failed {symbol} {tf}: {e}")
+                                pull_fail.add((symbol, tf))
+                                last_seen[(symbol, tf)] = -1
+                                pair_fail_at[(symbol, tf)] = time.time()
+                        to_analyze = [(s, tf) for s, tf in batch if (s, tf) not in pull_fail]
+                        # model freshness: one check per batch (workers load the
+                        # model file per task, so retrains are picked up)
+                        if to_analyze:
+                            try:
+                                pipeline.ensure_model_current(cfg, ml, store=store, demo=demo_mode,
+                                                              verbose=debug_enabled(cfg))
+                            except Exception as e:
+                                debug(f"ensure_model_current failed: {e}")
+                        # phase 2: analyses in the process pool (true CPU parallelism)
+                        results = []
+                        pool = pipeline._analysis_pool(cfg)
+                        if pool is not None and len(to_analyze) > 1:
+                            payloads = [(s, tf, cfg["storage"]["path"], cfg, True)
+                                        for s, tf in to_analyze]
+                            results = list(pool.map(pipeline._analyze_pair_worker, payloads))
+                        else:
+                            for s, tf in to_analyze:
+                                try:
+                                    pipeline.refresh_pair(cfg, store, s, tf, mt5, ml, llm,
+                                                          symbol_stats, drop_forming_bar=True,
+                                                          demo=demo_mode)
+                                    results.append({"symbol": s, "tf": tf, "ok": True})
+                                except Exception as e:
+                                    results.append({"symbol": s, "tf": tf, "ok": False, "error": str(e)})
+                        for r in results:
+                            if not r.get("ok"):
+                                k = (r["symbol"], r["tf"])
+                                last_seen[k] = -1
+                                pair_fail_at[k] = time.time()
+                                debug(f"analyze FAILED {r['symbol']} {r['tf']}: {r.get('error')}")
+                        ok_n = sum(1 for r in results if r.get("ok"))
+                        state["last_analysis"] = {"at": int(time.time())}
+                        state["last_run"] = {"at": int(time.time()), "analyses": ok_n,
+                                             "seconds": round(time.time() - t_b, 1),
+                                             "bar_close": f"{len(batch)} pairs"}
+                        if not any(not r.get("ok") for r in results) and not pull_fail:
+                            state["last_error"] = None
+                        debug(f"bar-close batch done: {ok_n}/{len(batch)} analyzed "
+                              f"in {time.time() - t_b:.1f}s")
                     # refresh the CSM snapshot when bars closed (throttled internally)
-                    if triggers:
+                    if batch:
                         try:
                             pipeline.update_csm(cfg, store, mt5=mt5, demo=demo_mode)
                         except Exception as e:
@@ -179,8 +213,7 @@ def create_app(cfg: dict) -> FastAPI:
                           f"{time.time() - watch['last_poll_done']:.0f}s (MT5 blocking?)")
                 watch["last_poll_done"] = time.time()
                 if time.time() - last_hb > 120:
-                    debug(f"watcher alive: peeked {peeked} pairs, "
-                          f"{len(in_flight)} analyzing")
+                    debug(f"watcher alive: peeked {peeked} pairs")
                     last_hb = time.time()
                 time.sleep(bar_poll)
         def _watchdog():

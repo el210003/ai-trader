@@ -96,7 +96,8 @@ DEFAULTS = {
     "dashboard": {"host": "127.0.0.1", "port": 8000, "refresh_seconds": 60,
                   "auto_run_interval": 0, "bar_close_watcher": False,
                   "bar_poll_seconds": 10, "debug": True,
-                  "log_file": "logs/ai-trader.log"},
+                  "log_file": "logs/ai-trader.log",
+                  "parallel_analysis": True, "analysis_workers": 0},
 }
 
 

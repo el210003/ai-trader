@@ -146,6 +146,8 @@ dashboard:
   debug: true               # verbose console output — shows exactly what each
                             # analysis cycle / retrain / bar-close is doing
   log_file: logs/ai-trader.log   # ALL console output is mirrored here (rotated)
+  parallel_analysis: true   # analyze bar-close pairs in parallel worker processes
+  analysis_workers: 0       # 0 = auto (CPU cores - 1, capped at 8)
   host: 0.0.0.0
   port: 8000
   refresh_seconds: 60        # auto-refresh interval in the web UI (view only)

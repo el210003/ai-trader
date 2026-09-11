@@ -1,8 +1,9 @@
 """Pipeline orchestration: ingest -> SMC -> setups -> ML -> LLM -> hybrid -> store."""
 import json
+import os
 import threading
 import time
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
 from pathlib import Path
 
 from . import smc as smc_mod
@@ -250,6 +251,57 @@ def peek_last_bar_time(symbol: str, tf: str, demo: bool = False,
     return int(df["time"].iloc[-1]) if len(df) else None
 
 
+# ------------------------------------------------- parallel pair analysis
+_ANALYSIS_POOL = None
+_ANALYSIS_POOL_SIZE = None
+
+
+def _analysis_pool(cfg: dict):
+    """Persistent ProcessPoolExecutor for pair analyses (created lazily,
+    reused across bar-close batches and run_all cycles)."""
+    global _ANALYSIS_POOL, _ANALYSIS_POOL_SIZE
+    if not cfg.get("dashboard", {}).get("parallel_analysis", True):
+        return None
+    size = int(cfg.get("dashboard", {}).get("analysis_workers") or 0)
+    if size <= 0:
+        size = max(1, min((os.cpu_count() or 2) - 1, 8))
+    if _ANALYSIS_POOL is None or _ANALYSIS_POOL_SIZE != size:
+        if _ANALYSIS_POOL is not None:
+            _ANALYSIS_POOL.shutdown(wait=False)
+        _ANALYSIS_POOL = ProcessPoolExecutor(max_workers=size)
+        _ANALYSIS_POOL_SIZE = size
+    return _ANALYSIS_POOL
+
+
+def _analyze_pair_worker(payload):
+    """ProcessPoolExecutor entry: full analysis for ONE pair in a child
+    process (true CPU parallelism — the GIL no longer serializes pandas).
+    Loads the model fresh per task so retrains are picked up immediately.
+    analyze_symbol saves the analysis + journal rows itself (idempotent)."""
+    symbol, tf, storage_path, cfg, drop_last_bar = payload
+    out = {"symbol": symbol, "tf": tf, "ok": False, "setups": 0,
+           "verdicts": [], "error": None, "seconds": 0.0}
+    t0 = time.time()
+    try:
+        store = Store(storage_path)
+        try:
+            ml = SetupML(cfg["ai"]["ml"]["model_path"])
+            ml.load()
+            llm = LLMAnalyzer(cfg.get("ai", {}).get("llm", {}))
+            a = analyze_symbol(store, symbol, tf, cfg, ml, llm, SymbolStats(),
+                               drop_last_bar=drop_last_bar)
+            out["ok"] = True
+            out["setups"] = len(a["setups"]) if a else 0
+            out["verdicts"] = [(s["direction"], s["verdict"], s.get("final_score"))
+                                for s in (a["setups"] if a else [])]
+        finally:
+            store.conn.close()
+    except Exception as e:
+        out["error"] = str(e)
+    out["seconds"] = round(time.time() - t0, 1)
+    return out
+
+
 def refresh_pair(cfg: dict, store: Store, symbol: str, tf: str, mt5,
                  ml: SetupML, llm: LLMAnalyzer, symbol_stats: SymbolStats = None,
                  drop_forming_bar: bool = True, demo: bool = False):
@@ -307,17 +359,32 @@ def run_all(cfg: dict, store: Store = None, demo: bool = False,
                 mt5_client.shutdown_mt5(mt5)
 
     count = 0
-    for symbol, tf in pairs:
-        try:
-            a = analyze_symbol(store, symbol, tf, cfg, ml, llm, symbol_stats)
-            if a and verbose:
-                tops = ", ".join(f"{s['direction'].upper()} {s['verdict']} ({s['final_score']})"
-                                 for s in a["setups"]) or "no setups"
-                print(f"  analyzed {symbol} {tf}: {tops}")
-            count += 1 if a else 0
-        except Exception as e:
+    t_an = time.time()
+    pool = _analysis_pool(cfg)
+    if pool is not None and len(pairs) > 1:
+        payloads = [(s, tf, cfg["storage"]["path"], cfg, False) for s, tf in pairs]
+        for r in pool.map(_analyze_pair_worker, payloads):
+            count += 1 if r["ok"] and r["setups"] >= 0 else 0
             if verbose:
-                print(f"  [warn] analyze failed {symbol} {tf}: {e}")
+                if r["error"]:
+                    print(f"  [warn] analyze failed {r['symbol']} {r['tf']}: {r['error']}")
+                else:
+                    tops = ", ".join(f"{d.upper()} {v} ({sc})" for d, v, sc in r["verdicts"]) or "no setups"
+                    print(f"  analyzed {r['symbol']} {r['tf']} ({r['seconds']}s): {tops}")
+    else:
+        for symbol, tf in pairs:
+            try:
+                a = analyze_symbol(store, symbol, tf, cfg, ml, llm, symbol_stats)
+                if a and verbose:
+                    tops = ", ".join(f"{s['direction'].upper()} {s['verdict']} ({s['final_score']})"
+                                     for s in a["setups"]) or "no setups"
+                    print(f"  analyzed {symbol} {tf}: {tops}")
+                count += 1 if a else 0
+            except Exception as e:
+                if verbose:
+                    print(f"  [warn] analyze failed {symbol} {tf}: {e}")
+    if verbose:
+        print(f"  analysis phase done: {count} pairs in {time.time() - t_an:.1f}s")
 
     # resolve outcomes of previously journaled setups against fresh candles
     try:
