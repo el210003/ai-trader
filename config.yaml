@@ -134,6 +134,9 @@ outcomes:
   lookback_days: 30         # only resolve setups formed within this window
 
 dashboard:
+  debug: true               # verbose console output — shows exactly what each
+                            # analysis cycle / retrain / bar-close is doing
+  log_file: logs/ai-trader.log   # ALL console output is mirrored here (rotated)
   host: 0.0.0.0
   port: 8000
   refresh_seconds: 60        # auto-refresh interval in the web UI (view only)

@@ -131,6 +131,8 @@ def cmd_train(cfg, args):
 def cmd_serve(cfg, args):
     import uvicorn
     from .dashboard.server import create_app
+    from .logsetup import setup_process_logging
+    setup_process_logging(cfg)   # tee console -> log file (dashboard.log_file)
     mt5 = _connect_mt5_if_needed(cfg, args.demo)
     syms = _symbols_for(cfg, args, mt5)
     if mt5 is not None:

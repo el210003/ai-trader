@@ -17,3 +17,4 @@ serve.bat
 # os/editor
 Thumbs.db
 .DS_Store
+logs/

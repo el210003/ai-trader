@@ -260,7 +260,8 @@ def refresh_pair(cfg: dict, store: Store, symbol: str, tf: str, mt5,
     store.upsert_candles(df, symbol, tf)
     if symbol_stats:
         symbol_stats.invalidate(symbol)
-    ensure_model_current(cfg, ml, store=store, demo=demo)
+    ensure_model_current(cfg, ml, store=store, demo=demo,
+                         verbose=bool(cfg.get("dashboard", {}).get("debug", True)))
     return analyze_symbol(store, symbol, tf, cfg, ml, llm, symbol_stats,
                           drop_last_bar=drop_forming_bar)
 

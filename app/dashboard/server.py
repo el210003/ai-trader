@@ -13,6 +13,7 @@ from ..data.store import Store
 from ..data.mt5_client import load_discovered_symbols
 from ..ai.ml_model import SetupML
 from ..ai.llm import LLMAnalyzer
+from ..logsetup import debug, debug_enabled
 from ..ai.symbol_stats import SymbolStats
 from ..symbol_selection import SymbolSelection
 from .. import pipeline
@@ -97,6 +98,9 @@ def create_app(cfg: dict) -> FastAPI:
                             else:
                                 last_seen[key] = t
                     bootstrapped = True
+                    if triggers:
+                        debug("bar-close triggers: " + ", ".join(
+                            f"{s} {tf}" for s, tf, _ in triggers))
                     for (symbol, tf, t_new) in triggers:
                         key = (symbol, tf)
                         with lock:
@@ -108,6 +112,7 @@ def create_app(cfg: dict) -> FastAPI:
                         def _work(symbol=symbol, tf=tf, t_new=t_new):
                             try:
                                 t0 = time.time()
+                                debug(f"bar-close {symbol} {tf}: pulling + analyzing...")
                                 state["last_pull"] = {"at": int(t0)}   # bar pull starts
                                 pipeline.refresh_pair(cfg, store, symbol, tf, mt5, ml, llm,
                                                       symbol_stats, drop_forming_bar=True,
@@ -117,6 +122,8 @@ def create_app(cfg: dict) -> FastAPI:
                                                      "seconds": round(time.time() - t0, 1),
                                                      "bar_close": f"{symbol} {tf}"}
                                 state["last_error"] = None
+                                debug(f"bar-close {symbol} {tf}: done in "
+                                      f"{time.time() - t0:.1f}s")
                             except Exception as e:
                                 state["last_error"] = f"bar-close {symbol} {tf}: {e}"
                                 last_seen[(symbol, tf)] = -1   # force retry next poll
@@ -146,19 +153,24 @@ def create_app(cfg: dict) -> FastAPI:
 
     def _refresh_job(demo: bool):
         try:
+            verbose = debug_enabled(cfg)
             t0 = time.time()
+            debug(f"analysis cycle started ({len(visible_symbols())} symbols "
+                  f"x {len(cfg['timeframes'])} TFs, demo={demo})")
             # auto mode: retrain stale model before analyzing
             try:
-                pipeline.retrain_if_stale(cfg, symbols=visible_symbols(), verbose=False)
+                pipeline.retrain_if_stale(cfg, symbols=visible_symbols(), verbose=verbose)
             except Exception as e:
                 state["last_error"] = f"auto-retrain failed: {e}"
             state["last_pull"] = {"at": int(time.time())}   # ingest (bar pull) starts now
             n = pipeline.run_all(cfg, store=store, demo=demo, ingest=True,
-                                 verbose=False, symbols=visible_symbols())
+                                 verbose=verbose, symbols=visible_symbols())
             state["last_analysis"] = {"at": int(time.time())}
             state["last_run"] = {"at": int(time.time()), "analyses": n,
                                  "seconds": round(time.time() - t0, 1)}
             state["last_error"] = None
+            debug(f"analysis cycle finished: {n} analyses in "
+                  f"{time.time() - t0:.1f}s")
         except Exception as e:
             state["last_error"] = f"{e}\n{traceback.format_exc(limit=3)}"
         finally:
