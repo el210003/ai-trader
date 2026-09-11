@@ -324,6 +324,8 @@ def ensure_model_current(cfg: dict, ml: SetupML, store: Store = None,
     degrade gracefully to None until the retrain lands)."""
     if not ml.loaded or not model_needs_retrain():
         return False
+    if symbols is None:   # default: the enabled/selected symbols, not just config.yaml
+        symbols = cfg.get("_resolved_symbols") or list(cfg.get("symbols", []))
     if not _retrain_lock.acquire(blocking=False):
         return False
     try:
