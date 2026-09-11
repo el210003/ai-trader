@@ -202,6 +202,7 @@ aside::-webkit-scrollbar-thumb{background:var(--border2);border-radius:4px}
 .s-dir{font-weight:800;font-size:14px;letter-spacing:.6px}
 .s-dir.long{color:var(--green)} .s-dir.short{color:var(--red)}
 .s-meta{font-size:10.5px;color:var(--muted);margin-top:1px}
+.s-stamp{color:var(--dim)}
 .rr-pill{margin-left:auto;font-family:var(--mono);font-size:11.5px;font-weight:700;color:var(--blue);background:rgba(108,158,255,.1);border:1px solid rgba(108,158,255,.3);padding:3px 9px;border-radius:8px}
 
 .verdict-row{display:flex;align-items:center;gap:12px;margin-bottom:12px}
@@ -814,7 +815,7 @@ function renderSetups(){
         <div class="s-head">
           <div class="dir-ic ${cls}">${s.direction==='long'?'▲':'▼'}</div>
           <div><div class="s-dir ${cls}">${s.direction==='long'?'LONG':'SHORT'}</div>
-               <div class="s-meta">${esc(s.symbol)} · ${esc(s.tf)} · ${esc(String(s.entry_zone?.type||'').replace('_',' '))}</div></div>
+               <div class="s-meta">${esc(s.symbol)} · ${esc(s.tf)} · ${esc(String(s.entry_zone?.type||'').replace('_',' '))} · <span class="s-stamp" title="'bar' = open time of the last CLOSED bar this setup was formed on, in your broker's timezone (matches the MT5 chart). 'analyzed' = when the SMC+ML+LLM pipeline actually ran (your local time).">bar ${barTime} · analyzed ${analyzedTxt} (${ageTxt})</span></div></div>
           <span class="rr-pill">R:R 1:${fp(s.rr)}</span>
         </div>
         <div class="verdict-row">
@@ -835,7 +836,6 @@ function renderSetups(){
         <div class="chips">${chips}</div>
         ${aiBoxHtml(s, state.meta)}
         <div class="s-foot">
-          <span title="'bar' = open time of the last CLOSED bar this setup was formed on, in your broker's timezone (matches the MT5 chart). 'analyzed' = when the SMC+ML+LLM pipeline actually ran (your local time).">bar ${barTime} · analyzed ${analyzedTxt} (${ageTxt})</span>
           <span class="mono">${esc(src)}</span>
         </div>
       </div>
