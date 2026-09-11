@@ -809,13 +809,14 @@ function renderSetups(){
     const analyzedTxt = genDate ? genDate.toLocaleTimeString([], {hour:'2-digit',minute:'2-digit',second:'2-digit'}) : '—';
     const ageMin = genDate ? Math.max(0, Math.round((Date.now()-genDate.getTime())/60000)) : null;
     const ageTxt = ageMin == null ? '' : ageMin < 60 ? `${ageMin} min ago` : `${(ageMin/60).toFixed(1)} h ago`;
+    const distAtr = s.entry_distance_atr;
     return `
     <div class="setup ${vCls}">
       <div class="setup-inner">
         <div class="s-head">
           <div class="dir-ic ${cls}">${s.direction==='long'?'▲':'▼'}</div>
           <div><div class="s-dir ${cls}">${s.direction==='long'?'LONG':'SHORT'}</div>
-               <div class="s-meta">${esc(s.symbol)} · ${esc(s.tf)} · ${esc(String(s.entry_zone?.type||'').replace('_',' '))} · <span class="s-stamp" title="'bar' = open time of the last CLOSED bar this setup was formed on, in your broker's timezone (matches the MT5 chart). 'analyzed' = when the SMC+ML+LLM pipeline actually ran (your local time).">bar ${barTime} · analyzed ${analyzedTxt} (${ageTxt})</span></div></div>
+               <div class="s-meta">${esc(s.symbol)} · ${esc(s.tf)} · ${esc(String(s.entry_zone?.type||'').replace('_',' '))}${distAtr!=null?` · <span class="s-stamp" title="distance from current price to the limit entry, in ATRs — small = about to fill">${distAtr.toFixed(1)} ATR to entry</span>`:''} · <span class="s-stamp" title="'bar' = open time of the last CLOSED bar this setup was formed on, in your broker's timezone (matches the MT5 chart). 'analyzed' = when the SMC+ML+LLM pipeline actually ran (your local time).">bar ${barTime} · analyzed ${analyzedTxt} (${ageTxt})</span></div></div>
           <span class="rr-pill">R:R 1:${fp(s.rr)}</span>
         </div>
         <div class="verdict-row">

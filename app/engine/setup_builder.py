@@ -148,6 +148,25 @@ def build_setups(symbol: str, tf: str, df, smc: dict, cfg: dict,
             tp, rr = _target_liquidity("short", entry, close, risk, smc, min_rr, default_rr,
                                        extra_pools=htf_pools)
 
+        # ---- present-time gates: skip setups that are look-back, not actionable
+        # (a) price already ran away from the entry toward TP (chasing),
+        # (b) the entry zone was already retested since it formed (fill is gone).
+        run_atr = ((close - entry) if direction == "long" else (entry - close)) / atr_v
+        max_run = float(cfg.get("max_entry_distance_atr", 1.0))
+        if run_atr > max_run:
+            continue
+        if cfg.get("skip_already_tested", True):
+            tested = False
+            for k in range(z["origin_index"] + 1, n):
+                if direction == "long" and df["low"].iat[k] <= entry:
+                    tested = True
+                    break
+                if direction == "short" and df["high"].iat[k] >= entry:
+                    tested = True
+                    break
+            if tested:
+                continue
+
         if rr > max_rr:                  # cap fantasy RR (target too far to be meaningful)
             tp = entry + max_rr * risk if direction == "long" else entry - max_rr * risk
             rr = max_rr
@@ -194,6 +213,7 @@ def build_setups(symbol: str, tf: str, df, smc: dict, cfg: dict,
             "symbol": symbol, "tf": tf, "direction": direction, "status": "active",
             "entry": float(entry), "stop_loss": float(sl), "take_profit": float(tp),
             "rr": round(float(rr), 2),
+            "entry_distance_atr": round(float(run_atr), 2),
             "entry_zone": {"type": ztype, "top": float(z["top"]), "bottom": float(z["bottom"]),
                            "origin_time": int(z["origin_time"]), "origin_index": int(z["origin_index"])},
             "range_position": round(float(range_pos), 3),

@@ -60,6 +60,10 @@ smc:
   max_rr: 5.0
   sl_buffer_atr: 0.25        # stop-loss buffer beyond zone/sweep wick, in ATR units
   min_risk_atr: 0.75         # stop must be at least this far from entry (ATR units)
+  max_entry_distance_atr: 1.0  # skip setups where price already ran this far past
+                             # entry toward TP (they are look-back, not actionable)
+  skip_already_tested: true  # skip setups whose entry zone was already retested
+                             # since it formed (the fill opportunity is gone)
   atr_period: 14
 
 ai:

@@ -32,6 +32,8 @@ DEFAULTS = {
         "max_rr": 5.0,
         "sl_buffer_atr": 0.25,
         "min_risk_atr": 0.75,
+        "max_entry_distance_atr": 1.0,
+        "skip_already_tested": True,
         "atr_period": 14,
     },
     "ai": {
