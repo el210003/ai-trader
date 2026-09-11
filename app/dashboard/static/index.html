@@ -283,6 +283,19 @@ aside::-webkit-scrollbar-thumb{background:var(--border2);border-radius:4px}
 .j-dir.long{color:var(--green)} .j-dir.short{color:var(--red)}
 .j-ml{margin-left:auto;font-family:var(--mono);font-size:10.5px;color:var(--muted)}
 .j-when{font-size:10px;color:var(--dim);min-width:64px;text-align:right}
+.j-card{padding:8px 10px;border:1px solid var(--border);border-radius:10px;margin-bottom:7px;background:rgba(255,255,255,.015)}
+.j-l1{display:flex;align-items:center;gap:8px}
+.j-l1 .j-ml{margin-left:auto}
+.j-l2{display:flex;align-items:center;gap:9px;margin-top:5px;font-family:var(--mono);font-size:9.5px;flex-wrap:wrap}
+.j-l2 .j-v{color:var(--text);white-space:nowrap}
+.j-l2 .j-v b{color:var(--dim);font-weight:600;margin-right:3px;font-size:8.5px}
+.j-l2 .j-sl{color:var(--red)}
+.j-l2 .j-tp{color:var(--green)}
+.j-verdict{font-size:8.5px;font-weight:800;letter-spacing:.8px;padding:2px 8px;border-radius:6px;font-family:var(--sans,inherit)}
+.j-verdict.v-buy{background:var(--green-dim);color:var(--green)}
+.j-verdict.v-sell{background:var(--red-dim);color:var(--red)}
+.j-verdict.v-wait{background:rgba(245,184,61,.08);color:var(--amber)}
+.j-verdict.v-avoid{background:rgba(135,146,166,.1);color:var(--muted);text-decoration:line-through}
 
 /* ---------- ranked tab ---------- */
 .rank-summary{display:flex;gap:6px;margin-bottom:10px;flex-wrap:wrap}
@@ -479,6 +492,11 @@ const state = { meta:null, data:null, series:null, chart:null, priceLines:[], pr
                 journalLoaded:false, csm:null, csmHidden:false };
 const CCY_COLORS = {EUR:'#2962ff', USD:'#ff5252', GBP:'#ff9800', AUD:'#4caf50',
                     NZD:'#00e676', CAD:'#9c27b0', CHF:'#e05252', JPY:'#00bcd4'};
+function fmtJ(p){
+  if (p == null) return '—';
+  const a = Math.abs(p);
+  return p.toFixed(a >= 1000 ? 1 : a >= 100 ? 2 : a >= 10 ? 3 : a >= 1 ? 4 : 5);
+}
 const $ = id => document.getElementById(id);
 
 /* ---------------------------------------------------------------- chart */
@@ -947,6 +965,8 @@ async function loadJournal(){
       const dirCls = row.direction === 'long' ? 'long' : 'short';
       const arrow = row.direction === 'long' ? '▲' : '▼';
       const ml = row.ml_prob != null ? (row.ml_prob*100).toFixed(0)+'%' : '—';
+      const v = (row.verdict||'—').toUpperCase();
+      const vCls = v==='BUY' ? 'v-buy' : v==='SELL' ? 'v-sell' : v==='AVOID' ? 'v-avoid' : 'v-wait';
       const when = row.formed_at ? new Date(row.formed_at*1000).toLocaleString([], {month:'short',day:'numeric',hour:'2-digit',minute:'2-digit',hour12:false,timeZone:'UTC'}) : '—';
       let badge = '';
       const res = row.result;
@@ -956,13 +976,23 @@ async function loadJournal(){
       else if (res === 'EXPIRED_OPEN') badge = `<span class="o-badge exp" title="filled, neither TP nor SL within horizon · MFE ${row.mfe_r??'—'}R / MAE ${row.mae_r??'—'}R">expired</span>`;
       else if (res === 'VOID') badge = `<span class="o-badge exp">void</span>`;
       else badge = `<span class="o-badge open">open</span>`;
-      return `<div class="j-row">
-        <span class="j-out ${esc(row.verdict||'')}"></span>
-        <span class="j-sym">${esc(row.symbol)}</span>
-        <span class="j-dir ${dirCls}">${arrow} ${esc(row.direction||'')}</span>
-        <span class="j-ml">ML ${ml} · ${esc(row.verdict||'—')}</span>
-        ${badge}
-        <span class="j-when" title="bar open time in your broker's timezone (matches the MT5 chart)">${esc(when)}</span>
+      return `<div class="j-card">
+        <div class="j-l1">
+          <span class="j-out ${esc(row.verdict||'')}"></span>
+          <span class="j-sym">${esc(row.symbol)}</span>
+          <span class="j-dir ${dirCls}">${arrow} ${esc((row.direction||'').toUpperCase())}</span>
+          <span class="j-ml">ML ${ml}</span>
+          ${badge}
+          <span class="j-when" title="bar open time in your broker's timezone (matches the MT5 chart)">${esc(when)}</span>
+        </div>
+        <div class="j-l2">
+          <span class="j-verdict ${vCls}" title="hybrid verdict · score ${row.score!=null?row.score.toFixed(1):'—'}">${esc(v)}</span>
+          <span class="j-v"><b>E</b>${fmtJ(row.entry)}</span>
+          <span class="j-v j-sl"><b>SL</b>${fmtJ(row.stop_loss)}</span>
+          <span class="j-v j-tp"><b>TP</b>${fmtJ(row.take_profit)}</span>
+          <span class="j-v" title="planned risk:reward"><b>RR</b>${row.rr!=null?row.rr.toFixed(1):'—'}</span>
+          <span class="j-v" title="hybrid final score"><b>Σ</b>${row.score!=null?row.score.toFixed(0):'—'}</span>
+        </div>
       </div>`;
     }).join('') : '<div class="empty">Journal empty — it fills as analyses run.</div>';
 
