@@ -1,5 +1,6 @@
 """Pipeline orchestration: ingest -> SMC -> setups -> ML -> LLM -> hybrid -> store."""
 import json
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -225,6 +226,7 @@ def refresh_pair(cfg: dict, store: Store, symbol: str, tf: str, mt5,
     store.upsert_candles(df, symbol, tf)
     if symbol_stats:
         symbol_stats.invalidate(symbol)
+    ensure_model_current(cfg, ml, store=store, demo=demo)
     return analyze_symbol(store, symbol, tf, cfg, ml, llm, symbol_stats,
                           drop_last_bar=drop_forming_bar)
 
@@ -236,6 +238,8 @@ def run_all(cfg: dict, store: Store = None, demo: bool = False,
     store = store or Store(cfg["storage"]["path"])
     ml = SetupML(cfg["ai"]["ml"]["model_path"])
     ml.load()
+    ensure_model_current(cfg, ml, store=store, demo=demo, symbols=symbols,
+                         verbose=verbose)
     llm = LLMAnalyzer(cfg["ai"]["llm"])
     sym_list = symbols if symbols is not None else list(cfg["symbols"])
     pairs = [(s, tf) for s in sym_list for tf in cfg["timeframes"]]
@@ -305,6 +309,33 @@ def model_needs_retrain() -> bool:
 def mark_model_retrained():
     FEATURE_SET_MARKER.parent.mkdir(parents=True, exist_ok=True)
     FEATURE_SET_MARKER.write_text(feature_set_hash())
+
+
+_retrain_lock = threading.Lock()
+
+
+def ensure_model_current(cfg: dict, ml: SetupML, store: Store = None,
+                         symbols: list = None, demo: bool = False,
+                         verbose: bool = False) -> bool:
+    """Retrain once when the deployed model predates the current feature set
+    (e.g. after a feature upgrade). Safe to call from every path (serve
+    refresh job, bar-close watcher, analyze CLI) — only one retrain runs at
+    a time; concurrent callers proceed with the old model (predictions
+    degrade gracefully to None until the retrain lands)."""
+    if not ml.loaded or not model_needs_retrain():
+        return False
+    if not _retrain_lock.acquire(blocking=False):
+        return False
+    try:
+        if verbose:
+            print("[auto-retrain] deployed model predates the current feature set -- retraining once...")
+        train(cfg, store=store, demo=demo, symbols=symbols, verbose=verbose)
+        ml.load()
+        return True
+    except Exception:
+        return False
+    finally:
+        _retrain_lock.release()
 
 
 def is_model_stale(cfg: dict, ml: SetupML = None) -> bool:

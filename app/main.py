@@ -96,15 +96,10 @@ def cmd_analyze(cfg, args):
     llm = LLMAnalyzer(cfg["ai"]["llm"])
     syms = _symbols_for(cfg, args, mt5=None)
     # Auto-retrain on first use after a feature-set upgrade (per-symbol features):
-    # the deployed model was trained without the new features, so predictions
-    # would be silently wrong. Retrain once, transparently, then proceed.
-    if ml.loaded and pipeline.model_needs_retrain():
-        print("[auto-retrain] deployed model predates per-symbol features -- retraining once...")
-        try:
-            pipeline.train(cfg, symbols=syms, verbose=True)
-            ml = SetupML(cfg["ai"]["ml"]["model_path"]); ml.load()
-        except Exception as e:
-            print(f"  [warn] auto-retrain failed: {e} -- continuing with old model")
+    # Auto-retrain on first use after a feature-set upgrade: the deployed
+    # model would otherwise predict with mismatched features (ml_prob None).
+    if ml.loaded:
+        pipeline.ensure_model_current(cfg, ml, symbols=syms, verbose=True)
     print(f"model: {'loaded' if ml.loaded else 'NOT TRAINED (run `python -m app.main train`)'} | "
           f"llm: {'enabled (' + llm.model + ')' if llm.usable else 'disabled'} | "
           f"symbols: {len(syms)}")
