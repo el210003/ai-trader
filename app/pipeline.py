@@ -436,6 +436,7 @@ def train(cfg: dict, store: Store = None, demo: bool = False,
     symbol_stats = SymbolStats()
 
     rows, labels = [], []
+    replay_ids: set = set()      # (symbol, tf, formed_at, direction) — tier-3 dedup
     history_by_pair: dict = {}   # (symbol, tf) -> list of prior outcomes
 
     for symbol in sym_list:
@@ -450,10 +451,8 @@ def train(cfg: dict, store: Store = None, demo: bool = False,
             history = history_by_pair.setdefault((symbol, tf), [])
             mtf_on = cfg.get("mtf", {}).get("enabled", True)
             df_cache: dict = {}     # (symbol, htf) -> full HTF frame
-            ctx_cache: dict = {}    # (symbol, htf, last closed HTF bar) -> ctx
-            sym_list_stats = static  # noqa: F841 (readability anchor)
+            ctx_cache: dict = {}    # (symbol, htf) last closed HTF bar -> ctx
             made = 0
-            replay_ids.update() if False else None
             for i in range(warmup, n - horizon - 1, step):
                 sub = df.iloc[:i + 1].reset_index(drop=True)
                 try:
