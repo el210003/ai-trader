@@ -129,6 +129,11 @@ def create_app(cfg: dict) -> FastAPI:
                             pipeline.update_csm(cfg, store, mt5=mt5, demo=demo_mode)
                         except Exception as e:
                             state["last_error"] = f"csm update: {e}"
+                        # resolve outcomes of previously journaled setups
+                        try:
+                            pipeline.resolve_pending(store, cfg)
+                        except Exception as e:
+                            state["last_error"] = f"outcome resolve: {e}"
                 except Exception as e:
                     state["last_error"] = f"bar watcher: {e}"
                     try:
@@ -336,8 +341,27 @@ def create_app(cfg: dict) -> FastAPI:
 
     @app.get("/api/setups/history")
     def setups_history(symbol: str = None, tf: str = None, limit: int = 200):
-        return {"rows": store.load_setups_history(symbol, tf, limit),
+        from ..engine import outcomes as outcomes_mod
+        rows = store.load_setups_history(symbol, tf, limit)
+        return {"rows": rows,
                 "stats": store.outcome_stats(symbol, tf)}
+
+    @app.get("/api/outcomes/stats")
+    def outcomes_stats(symbol: str = None, tf: str = None):
+        """Aggregated setup-effectiveness views (Performance tab)."""
+        from ..engine import outcomes as outcomes_mod
+        rows = store.load_outcome_rows(symbol, tf)
+        return outcomes_mod.aggregate(rows)
+
+    @app.post("/api/outcomes/resolve")
+    def outcomes_resolve():
+        from ..engine import outcomes as outcomes_mod
+        with lock:
+            busy = state["running"] or state["retraining"]
+        if busy:
+            return JSONResponse({"ok": False, "error": "pipeline busy"}, status_code=409)
+        n = outcomes_mod.resolve_pending(store, cfg)
+        return {"ok": True, "resolved": n}
 
     @app.get("/api/status")
     def status():

@@ -11,6 +11,7 @@ from .data.store import Store
 from .data import mt5_client
 from .engine.setup_builder import build_setups
 from .engine.mtf import build_htf_context
+from .engine.outcomes import resolve_pending
 from .ai.features import make_features, FEATURES
 from .ai.symbol_stats import SymbolStats
 from .ai.ml_model import SetupML
@@ -113,11 +114,14 @@ def analyze_symbol(store: Store, symbol: str, tf: str, cfg: dict,
                           csm_dir=csm_dir, mtf_cfg=mtf_cfg)
 
     static = symbol_stats.static_features(df, symbol) if symbol_stats else None
+    # live per-symbol dynamic features from RESOLVED outcomes (phase-2 feedback
+    # loop; None on cold-start, matching training semantics)
+    dynamic = symbol_stats.dynamic_features_live(store, symbol) if symbol_stats else None
     for s in setups:
-        # At live inference the dynamic per-symbol features are neutral
-        # (no labeled history available at prediction time).
+        # At live inference the dynamic per-symbol features come from resolved
+        # outcomes of this symbol (see dynamic_features_live).
         s["features"] = make_features(df, s, smc, cfg["smc"],
-                                      symbol_static=static, symbol_dynamic=None,
+                                      symbol_static=static, symbol_dynamic=dynamic,
                                       htf_ctx=htf_ctx)
         s["ml_prob"] = ml.predict(s["features"])
 
@@ -313,6 +317,13 @@ def run_all(cfg: dict, store: Store = None, demo: bool = False,
         except Exception as e:
             if verbose:
                 print(f"  [warn] analyze failed {symbol} {tf}: {e}")
+
+    # resolve outcomes of previously journaled setups against fresh candles
+    try:
+        resolve_pending(store, cfg, verbose=verbose)
+    except Exception as e:
+        if verbose:
+            print(f"  [warn] outcome resolution failed: {e}")
     return count
 
 

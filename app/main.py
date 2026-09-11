@@ -20,6 +20,7 @@ from .data import mt5_client
 from .ai.ml_model import SetupML
 from .ai.llm import LLMAnalyzer
 from .symbols import resolve_symbols
+from .engine import outcomes as outcomes_mod
 from .symbol_selection import SymbolSelection
 from . import pipeline
 
@@ -263,31 +264,59 @@ def cmd_test_llm(cfg, args):
 
 def cmd_history(cfg, args):
     """Print the journaled setups (forward-validation data)."""
-    store = Store(cfg["storage"]["path"])
+    store = Store(cfg["storage"]['path'])
+    outcomes_mod.resolve_pending(store, cfg)   # resolve what we can first
     rows = store.load_setups_history(args.symbol, args.tf, limit=int(args.limit))
     stats = store.outcome_stats(args.symbol, args.tf)
     print(f"journaled setups: {stats['total']} total "
-          f"(by verdict: {stats['by_verdict']}, by direction: {stats['by_direction']})")
+          f"(resolved: {stats.get('resolved')}, win rate: {stats.get('win_rate')}, "
+          f"expectancy: {stats.get('expectancy_r')}R, open: {stats.get('open')})")
     if not rows:
         print("  (empty -- run analyze / refresh to populate)")
         return
     print(f"showing last {len(rows)}:\n")
     print(f"{'formed':<17} {'symbol':<8} {'tf':<5} {'dir':<6} {'verdict':<7} "
-          f"{'score':>6} {'ml%':>5} {'rr':>5}  entry")
+          f"{'score':>6} {'ml%':>5} {'rr':>5} {'result':<9} {'R':>6}  entry")
     for r in rows:
         formed = time.strftime('%Y-%m-%d %H:%M', time.gmtime(r['formed_at'] or 0))
         ml = f"{r['ml_prob']*100:.0f}" if r['ml_prob'] is not None else '-'
+        res = (r.get('result') or 'OPEN')
+        rmul = f"{r['r_multiple']:+.2f}" if r.get('r_multiple') is not None else '-'
         print(f"{formed:<17} {r['symbol']:<8} {r['tf']:<5} "
               f"{(r['direction'] or '-'):<6} {(r['verdict'] or '-'):<7} "
               f"{(r['score'] if r['score'] is not None else 0):>6.1f} {ml:>5} "
-              f"{(r['rr'] if r['rr'] is not None else 0):>5.2f}  {r['entry']}")
+              f"{(r['rr'] if r['rr'] is not None else 0):>5.2f} {res:<9} {rmul:>6}  {r['entry']}")
+
+
+def cmd_outcomes(cfg, args):
+    """Resolve pending setup outcomes and print the performance summary."""
+    import json
+    store = Store(cfg["storage"]["path"])
+    n = outcomes_mod.resolve_pending(store, cfg, verbose=True)
+    print(f"resolved {n} pending setup(s)")
+    rows = store.load_outcome_rows(args.symbol, args.tf)
+    agg = outcomes_mod.aggregate(rows)
+    o = agg["overall"]
+    print(f"\nresolved outcomes: {o['resolved']} (wins {o['wins']}) | "
+          f"win rate {o['win_rate']} | expectancy {o['expectancy_r']}R | "
+          f"fill rate {o['fill_rate']}")
+    print("\nby verdict:")
+    for k, v in agg["by_verdict"].items():
+        print(f"  {k:<9} n={v['n']:<5} win rate {v['win_rate']} | expectancy {v['expectancy_r']}R")
+    print("\nby HTF alignment:")
+    for k, v in agg["by_htf_alignment"].items():
+        print(f"  {k:<12} n={v['n']:<5} win rate {v['win_rate']} | expectancy {v['expectancy_r']}R")
+    print("\nML calibration (predicted vs realized):")
+    for k, v in agg["calibration"].items():
+        print(f"  {k:<9} n={v['n']:<5} predicted {v['predicted']} | realized {v['realized']}")
+    print("\nfull aggregates: GET /api/outcomes/stats (Performance tab)")
 
 
 def main():
     p = argparse.ArgumentParser(prog="ai-trader")
     p.add_argument("command", choices=["ingest", "analyze", "train", "serve",
                                        "run", "list-symbols", "select-symbols",
-                                       "history", "test-llm"])
+                                       "history", "outcomes", "test-llm"])
     p.add_argument("--demo", action="store_true", help="use synthetic data instead of MT5")
     p.add_argument("--all-symbols", action="store_true",
                    help="override config.yaml symbols with symbols discovered from MT5")
@@ -306,8 +335,8 @@ def main():
                    help="(train) save metrics as baseline for --compare")
     p.add_argument("--compare", action="store_true",
                    help="(train) compare metrics against the saved baseline")
-    p.add_argument("--symbol", default=None, help="(history) filter by symbol")
-    p.add_argument("--tf", default=None, help="(history) filter by timeframe")
+    p.add_argument("--symbol", default=None, help="(history/outcomes) filter by symbol")
+    p.add_argument("--tf", default=None, help="(history/outcomes) filter by timeframe")
     p.add_argument("--limit", default=50, help="(history) max rows to show")
     p.add_argument("--auto", type=int, default=0,
                    help="(serve) auto-run the full pipeline every N seconds (0 = off)")
@@ -322,6 +351,7 @@ def main():
         "list-symbols": cmd_list_symbols,
         "select-symbols": cmd_select_symbols,
         "history": cmd_history,
+        "outcomes": cmd_outcomes,
         "test-llm": cmd_test_llm,
     }
     handlers[args.command](cfg, args)

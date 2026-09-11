@@ -76,6 +76,10 @@ DEFAULTS = {
         "zone_buffer_atr": 0.5,
         "entry_tf": "",
     },
+    "outcomes": {
+        "enabled": True,
+        "lookback_days": 30,
+    },
     "dashboard": {"host": "127.0.0.1", "port": 8000, "refresh_seconds": 60,
                   "auto_run_interval": 0, "bar_close_watcher": False,
                   "bar_poll_seconds": 10},

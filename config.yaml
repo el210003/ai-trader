@@ -122,6 +122,14 @@ mtf:
                             # (charts, HTF confluence) and generate no setups.
                             # empty = all timeframes generate setups
 
+# Outcome tracking: every journaled setup is resolved against subsequent
+# candles (WIN/LOSS/EXPIRED, same conservative rules as the ML labeler).
+# Results feed the Journal badges, the Performance tab, and the live
+# per-symbol ML features. Runs after each analysis cycle.
+outcomes:
+  enabled: true             # reserved flag (resolution is cheap & idempotent)
+  lookback_days: 30         # only resolve setups formed within this window
+
 dashboard:
   host: 0.0.0.0
   port: 8000

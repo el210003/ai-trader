@@ -105,6 +105,26 @@ main{flex:1;display:grid;grid-template-columns:1fr 460px;min-height:0}
 .tr b{color:var(--text);font-weight:700}
 .tr .what{color:var(--muted)}
 .tr .when{margin-left:auto;color:var(--dim);font-family:var(--mono);font-size:8.5px}
+
+/* ---------- journal outcome badges + perf tables ---------- */
+.o-badge{font-size:8.5px;font-weight:700;padding:1px 6px;border-radius:6px;letter-spacing:.3px;flex:none}
+.o-badge.win{background:var(--green-dim);color:var(--green);border:1px solid rgba(45,212,167,.35)}
+.o-badge.loss{background:var(--red-dim);color:var(--red);border:1px solid rgba(242,95,92,.35)}
+.o-badge.exp{background:rgba(135,146,166,.1);color:var(--muted);border:1px solid var(--border)}
+.o-badge.open{background:rgba(245,184,61,.08);color:var(--amber);border:1px solid rgba(245,184,61,.3)}
+.perf-t{width:100%;border-collapse:collapse;font-size:10.5px;margin-bottom:14px}
+.perf-t th{text-align:left;font-size:8.5px;letter-spacing:1px;text-transform:uppercase;color:var(--dim);padding:4px 6px;border-bottom:1px solid var(--border)}
+.perf-t td{padding:5px 6px;border-bottom:1px solid rgba(135,146,166,.07)}
+.perf-t td.mono,.perf-t .mono{font-family:var(--mono)}
+.perf-bar{height:5px;background:rgba(135,146,166,.12);border-radius:3px;overflow:hidden}
+.perf-fill{height:100%;border-radius:3px}
+.perf-fill.g{background:linear-gradient(90deg,var(--green),rgba(45,212,167,.5))}
+.perf-fill.r{background:linear-gradient(90deg,var(--red),rgba(242,95,92,.5))}
+.rs-item .rs-v.up{color:var(--green)}
+.rs-item .rs-v.dn{color:var(--red)}
+.rs-item{display:inline-flex;flex-direction:column;align-items:center;gap:0;padding:5px 12px;border-radius:9px;border:1px solid var(--border2);background:rgba(255,255,255,.02);min-width:74px}
+.rs-item .rs-v{font-family:var(--mono);font-size:13px;font-weight:700;color:var(--text);line-height:1.2}
+.rs-item .rs-k{font-size:8px;letter-spacing:1px;text-transform:uppercase;color:var(--dim)}
 #legend label{display:flex;align-items:center;gap:4px;cursor:pointer}
 #legend .sw{width:10px;height:10px;border-radius:2px;display:inline-block}
 
@@ -382,6 +402,7 @@ footer{padding:6px 16px;font-size:11px;color:var(--muted);border-top:1px solid v
         <div class="tab active" id="tabSetups" onclick="showTab('setups')">Setups<span class="cnt" id="cntSetups">0</span></div>
         <div class="tab" id="tabRanked" onclick="showTab('ranked')">Ranked<span class="cnt" id="cntRanked">0</span></div>
         <div class="tab" id="tabJournal" onclick="showTab('journal')">Journal<span class="cnt" id="cntJournal">0</span></div>
+        <div class="tab" id="tabPerf" onclick="showTab('perf')">Perf</div>
       </div>
     </div>
 
@@ -400,9 +421,20 @@ footer{padding:6px 16px;font-size:11px;color:var(--muted);border-top:1px solid v
     </div>
 
     <div id="viewJournal" class="pad" style="display:none">
-      <div class="card"><div class="card-h"><span class="ic">▤</span><h3>Setups Journal</h3><span class="sub" id="journalSub">…</span></div><div id="journalRows"><div class="empty">loading…</div></div></div>
+      <div class="card"><div class="card-h"><span class="ic">▤</span><h3>Setups Journal</h3><span class="sub" id="journalSub">…</span></div>
+        <div id="journalStats" class="rank-summary"></div>
+        <div id="journalRows"><div class="empty">loading…</div></div></div>
       <div class="card"><div class="card-h"><span class="ic">◎</span><h3>Signal Density by ML Bucket</h3></div><div id="calibRows"><div class="empty">loading…</div></div></div>
-      <div class="hint">Outcomes (win/loss) are filled in as you validate trades forward. Journal source: <span style="font-family:var(--mono)">setups_history</span> table.</div>
+      <div class="hint">Outcomes resolve automatically after each M15 bar close (same rules as ML training: SL wins ties). Journal source: <span style="font-family:var(--mono)">setups_history + outcomes</span>.</div>
+    </div>
+
+    <div id="viewPerf" class="pad" style="display:none">
+      <div class="card"><div class="card-h"><span class="ic">Σ</span><h3>Setup Effectiveness</h3><span class="sub" id="perfSub">…</span></div>
+        <div id="perfOverall"></div>
+      </div>
+      <div class="card"><div class="card-h"><span class="ic">⚖</span><h3>By Verdict · Score Band · ML Calibration</h3></div><div id="perfTables1"><div class="empty">loading…</div></div></div>
+      <div class="card"><div class="card-h"><span class="ic">◈</span><h3>By HTF Alignment · Direction · Session · Symbol</h3></div><div id="perfTables2"><div class="empty">loading…</div></div></div>
+      <div class="hint">R = realized multiple of the setup's planned risk. Expectancy = average R per resolved setup. WAIT/AVOID rows are resolved too — they validate the threshold. Source: <span style="font-family:var(--mono)">/api/outcomes/stats</span>.</div>
     </div>
   </aside>
 </main>
@@ -892,18 +924,36 @@ async function loadJournal(){
     const r = await fetch('/api/setups/history?limit=60');
     const j = await r.json();
     $('cntJournal').textContent = j.stats.total;
-    $('journalSub').textContent = `${j.stats.total} logged`;
+    const s = j.stats || {};
+    $('journalSub').textContent = `${s.total} logged · ${s.resolved||0} resolved`;
+    const pct = v => v==null ? '—' : (v*100).toFixed(0)+'%';
+    const exp = s.expectancy_r==null ? '—' : (s.expectancy_r>0?'+':'')+s.expectancy_r.toFixed(2)+'R';
+    const expCls = s.expectancy_r==null ? 'var(--muted)' : s.expectancy_r>0 ? 'var(--green)' : 'var(--red)';
+    $('journalStats').innerHTML = `
+      <div class="rs-item"><span class="rs-v" style="color:${expCls}">${exp}</span><span class="rs-k">expectancy</span></div>
+      <div class="rs-item"><span class="rs-v">${pct(s.win_rate)}</span><span class="rs-k">win rate</span></div>
+      <div class="rs-item"><span class="rs-v">${pct(s.fill_rate)}</span><span class="rs-k">fill rate</span></div>
+      <div class="rs-item"><span class="rs-v">${s.open||0}</span><span class="rs-k">open</span></div>`;
     const rows = j.rows || [];
     $('journalRows').innerHTML = rows.length ? rows.map(row => {
       const dirCls = row.direction === 'long' ? 'long' : 'short';
       const arrow = row.direction === 'long' ? '▲' : '▼';
       const ml = row.ml_prob != null ? (row.ml_prob*100).toFixed(0)+'%' : '—';
       const when = row.formed_at ? new Date(row.formed_at*1000).toLocaleString([], {month:'short',day:'numeric',hour:'2-digit',minute:'2-digit',hour12:false,timeZone:'UTC'}) : '—';
+      let badge = '';
+      const res = row.result;
+      if (res === 'WIN')  badge = `<span class="o-badge win" title="${row.bars_to_outcome??'—'} bars to TP · MFE ${row.mfe_r??'—'}R / MAE ${row.mae_r??'—'}R">WIN +${(row.r_multiple??0).toFixed(1)}R</span>`;
+      else if (res === 'LOSS') badge = `<span class="o-badge loss" title="${row.bars_to_outcome??'—'} bars to SL">LOSS −1R</span>`;
+      else if (res === 'EXPIRED_UNFILLED') badge = `<span class="o-badge exp" title="entry never touched within horizon">no fill</span>`;
+      else if (res === 'EXPIRED_OPEN') badge = `<span class="o-badge exp" title="filled, neither TP nor SL within horizon · MFE ${row.mfe_r??'—'}R / MAE ${row.mae_r??'—'}R">expired</span>`;
+      else if (res === 'VOID') badge = `<span class="o-badge exp">void</span>`;
+      else badge = `<span class="o-badge open">open</span>`;
       return `<div class="j-row">
         <span class="j-out ${esc(row.verdict||'')}"></span>
         <span class="j-sym">${esc(row.symbol)}</span>
         <span class="j-dir ${dirCls}">${arrow} ${esc(row.direction||'')}</span>
         <span class="j-ml">ML ${ml} · ${esc(row.verdict||'—')}</span>
+        ${badge}
         <span class="j-when" title="bar open time in your broker's timezone (matches the MT5 chart)">${esc(when)}</span>
       </div>`;
     }).join('') : '<div class="empty">Journal empty — it fills as analyses run.</div>';
@@ -934,11 +984,14 @@ function showTab(which){
   $('viewSetups').style.display = which==='setups' ? '' : 'none';
   $('viewRanked').style.display = which==='ranked' ? '' : 'none';
   $('viewJournal').style.display = which==='journal' ? '' : 'none';
+  $('viewPerf').style.display = which==='perf' ? '' : 'none';
   $('tabSetups').classList.toggle('active', which==='setups');
   $('tabRanked').classList.toggle('active', which==='ranked');
   $('tabJournal').classList.toggle('active', which==='journal');
+  $('tabPerf').classList.toggle('active', which==='perf');
   if (which==='journal') loadJournal();
   if (which==='ranked') loadRanked();
+  if (which==='perf') loadPerf();
 }
 
 /* ------------------------------------------------- thin CSM strip */
@@ -1004,6 +1057,61 @@ $('csmHide').onclick = () => {
   $('csmHide').textContent = state.csmHidden ? 'CSM ⌃' : 'CSM ⌄';
   renderCsmStrip();
 };
+
+/* ------------------------------------------------- performance tab */
+function perfTable(title, rows){
+  if (!rows || !rows.length) return '';
+  const maxN = Math.max(...rows.map(r => r.n), 1);
+  return `<table class="perf-t">
+    <tr><th>${title}</th><th>n</th><th>win rate</th><th>expectancy</th><th style="width:34%"></th></tr>
+    ${rows.map(r => {
+      const exp = r.expectancy_r;
+      const expCls = exp==null ? 'var(--muted)' : exp>0 ? 'var(--green)' : exp<0 ? 'var(--red)' : 'var(--muted)';
+      const wr = r.win_rate==null ? '—' : (r.win_rate*100).toFixed(0)+'%';
+      const wrCls = r.win_rate==null ? 'var(--muted)' : r.win_rate>=0.5 ? 'var(--green)' : 'var(--red)';
+      const w = Math.round((r.win_rate||0)*100);
+      return `<tr>
+        <td>${esc(r.key)}</td><td class="mono">${r.n}</td>
+        <td style="color:${wrCls}">${wr}</td>
+        <td style="color:${expCls}" class="mono">${exp==null?'—':(exp>0?'+':'')+exp.toFixed(2)+'R'}</td>
+        <td><div class="perf-bar"><div class="perf-fill ${w>=50?'g':'r'}" style="width:${w}%"></div></div></td>
+      </tr>`;
+    }).join('')}
+  </table>`;
+}
+
+async function loadPerf(){
+  try{
+    const etf = state.meta?.entry_tf;
+    const qs = etf ? `?tf=${encodeURIComponent(etf)}` : '';
+    const r = await fetch('/api/outcomes/stats'+qs);
+    const j = await r.json();
+    const o = j.overall || {};
+    $('perfSub').textContent = `${o.resolved||0} resolved · ${o.open||0} open · fill rate ${o.fill_rate==null?'—':(o.fill_rate*100).toFixed(0)+'%'}`;
+    const card = (v, k, cls='') => `<div class="rs-item"><span class="rs-v ${cls}">${v}</span><span class="rs-k">${k}</span></div>`;
+    const exp = o.expectancy_r==null ? '—' : (o.expectancy_r>0?'+':'')+o.expectancy_r.toFixed(2)+'R';
+    $('perfOverall').innerHTML = `<div class="rank-summary">
+      ${card(exp, 'expectancy', o.expectancy_r>0?'up':'dn')}
+      ${card(o.win_rate==null?'—':(o.win_rate*100).toFixed(0)+'%', 'win rate')}
+      ${card(o.avg_win_r==null?'—':'+'+o.avg_win_r.toFixed(2)+'R', 'avg win R')}
+      ${card(o.wins??0, 'wins')}
+      ${card(o.avg_mfe_r==null?'—':o.avg_mfe_r.toFixed(2)+'R', 'avg MFE', 'up')}
+      ${card(o.avg_mae_r==null?'—':o.avg_mae_r.toFixed(2)+'R', 'avg MAE', 'dn')}
+    </div>`;
+    const mk = (obj) => Object.entries(obj||{}).map(([k,v]) => ({key:k, ...v}));
+    const cal = Object.entries(j.calibration||{}).map(([k,v]) =>
+      ({key:`pred ${k}`, n:v.n, win_rate:v.realized, expectancy_r:null}));
+    $('perfTables1').innerHTML =
+      perfTable('Verdict', mk(j.by_verdict)) +
+      perfTable('Score band', mk(j.by_score_band)) +
+      perfTable('ML prob → realized', cal);
+    $('perfTables2').innerHTML =
+      perfTable('HTF alignment', mk(j.by_htf_alignment)) +
+      perfTable('Direction', mk(j.by_direction)) +
+      perfTable('Session (UTC)', mk(j.by_session)) +
+      perfTable('Symbol', mk(j.by_symbol));
+  }catch(e){ $('perfOverall').innerHTML = '<div class="empty">failed to load</div>'; }
+}
 
 /* -------------------------------------------------- ranked setups tab */
 async function loadRanked(){

@@ -93,6 +93,15 @@ Every qualified setup is **journaled** to the `setups_history` table for forward
   `train --compare` prints the delta; every training run reports permutation
   feature importances.
 
+## Outcome tracking & setup effectiveness
+
+Every journaled setup is resolved against subsequent candles (WIN / LOSS /
+EXPIRED, same conservative rules as the ML labeler — SL wins same-bar ties).
+Outcomes power the Journal badges + summary strip (win rate, expectancy in R,
+fill rate), the **Perf** tab (by verdict, score band, ML calibration, HTF
+alignment, symbol, session), the `outcomes` CLI, and the live per-symbol ML
+features. See `docs/outcome-tracking.md`.
+
 ## Multi-timeframe confluence (M15 entries, H1/H4 context)
 
 M15 is the entry timeframe; H1/H4 are projected into every M15 setup as

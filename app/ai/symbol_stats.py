@@ -80,3 +80,13 @@ class SymbolStats:
             "symbol_recent_win_rate": (sum(labels) / len(labels)) if labels else None,
             "symbol_avg_rr_realized": (sum(rrs) / len(rrs)) if rrs else None,
         }
+
+    def dynamic_features_live(self, store, symbol: str) -> dict:
+        """Phase-2 feedback loop: rolling win rate + realized RR from RESOLVED
+        live outcomes (WIN/LOSS only — same semantics as the training labels).
+        All resolved outcomes formed in the past, so there is no look-ahead.
+        None values on cold-start (< min_samples), matching training."""
+        hist = store.outcome_history_for_symbol(symbol, limit=self.lookback)
+        mapped = [{"label": 1 if h["result"] == "WIN" else 0,
+                   "realized_rr": h["r_multiple"]} for h in hist]
+        return self.dynamic_features(mapped)
