@@ -137,6 +137,17 @@ def update_csm(cfg: dict, store, mt5=None, demo: bool = False,
     if not strength:
         return None
 
+    # carry over TFs that failed this round (e.g. transient MT5 fetch issues)
+    # so a partial refresh never drops a timeframe that had data before
+    prev_strength = (prev or {}).get("strength", {})
+    prev_states = (prev or {}).get("pair_states", {})
+    for tf, s in prev_strength.items():
+        if tf not in strength:
+            strength[tf] = s
+            for pair, tfmap in prev_states.items():
+                if tf in tfmap:
+                    pair_states.setdefault(pair, {})[tf] = tfmap[tf]
+
     # cross-TF alignment per pair
     aligned = {}
     for pair, states in pair_states.items():

@@ -43,6 +43,7 @@ def create_app(cfg: dict) -> FastAPI:
              "last_retrain": None, "last_error": None, "demo_mode": False,
              "last_pull": None, "last_analysis": None}
     lock = threading.Lock()
+    _csm_lock = threading.Lock()   # one background CSM refresh at a time
 
     auto_cfg = (cfg.get("ai", {}).get("ml", {}).get("auto_retrain") or {})
     auto_run = int(cfg.get("dashboard", {}).get("auto_run_interval", 0) or 0)
@@ -291,8 +292,22 @@ def create_app(cfg: dict) -> FastAPI:
 
     @app.get("/api/csm")
     def csm_data():
-        return store.load_csm() or {"strength": {}, "aligned": {}, "transitions": [],
-                                    "pair_states": {}, "generated_at": 0, "pairs_used": 0}
+        snap = store.load_csm()
+        # self-heal: with the dashboard open but no watcher/auto-run running,
+        # kick a background refresh whenever the snapshot goes stale
+        max_age = max(60, int(cfg.get("csm", {}).get("min_interval_seconds", 30)))
+        if snap is None or time.time() - snap.get("generated_at", 0) > max_age:
+            if _csm_lock.acquire(blocking=False):
+                def _csm_work():
+                    try:
+                        pipeline.update_csm(cfg, store, mt5=mt5, demo=demo_mode)
+                    except Exception:
+                        pass
+                    finally:
+                        _csm_lock.release()
+                threading.Thread(target=_csm_work, daemon=True).start()
+        return snap or {"strength": {}, "aligned": {}, "transitions": [],
+                        "pair_states": {}, "generated_at": 0, "pairs_used": 0}
 
     @app.get("/api/setups/ranked")
     def ranked_setups(limit: int = 30):
