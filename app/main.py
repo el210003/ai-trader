@@ -342,11 +342,20 @@ def cmd_insights(cfg, args):
         print(f"  {r['feature']:<26} {r['verdict']:<12} spread={r['spread']}{detail}")
 
 
+def _cmd_migrate_journal(cfg, args):
+    """Collapse duplicate journal rows into one per real setup (backups first)."""
+    from scripts.migrate_journal import migrate
+    res = migrate(cfg["storage"]["path"])
+    print(f"journal migrated: {res['before']} rows -> {res['after']} "
+          f"(removed {res['removed']}) | backup tables *_backup_{res['backup_ts']}")
+
+
 def main():
     p = argparse.ArgumentParser(prog="ai-trader")
     p.add_argument("command", choices=["ingest", "analyze", "train", "serve",
                                        "run", "list-symbols", "select-symbols",
-                                       "history", "outcomes", "insights", "test-llm"])
+                                       "history", "outcomes", "insights",
+                                       "migrate-journal", "test-llm"])
     p.add_argument("--demo", action="store_true", help="use synthetic data instead of MT5")
     p.add_argument("--all-symbols", action="store_true",
                    help="override config.yaml symbols with symbols discovered from MT5")
@@ -383,6 +392,7 @@ def main():
         "history": cmd_history,
         "outcomes": cmd_outcomes,
         "insights": cmd_insights,
+        "migrate-journal": _cmd_migrate_journal,
         "test-llm": cmd_test_llm,
     }
     handlers[args.command](cfg, args)

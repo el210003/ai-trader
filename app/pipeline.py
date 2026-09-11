@@ -400,10 +400,17 @@ FEATURE_SET_MARKER = ROOT / "data" / "models" / ".feature_set"
 
 
 def feature_set_hash() -> str:
-    """Content hash of the current feature list — any feature change
-    invalidates deployed models without renaming marker files."""
+    """Content hash of the current feature list + setup-builder version.
+    Any feature change OR setup-construction change (retest buffer, entry
+    validity window, gates...) invalidates deployed models so they retrain,
+    keeping the model aligned with the setup distribution it predicts."""
     import hashlib
-    return hashlib.md5(json.dumps(FEATURES).encode()).hexdigest()[:12]
+    payload = {"features": FEATURES, "builder": BUILDER_VERSION}
+    return hashlib.md5(json.dumps(payload).encode()).hexdigest()[:12]
+
+
+# bump when setup-construction behavior changes (not when a feature changes)
+BUILDER_VERSION = "v3-entry-validity"
 
 
 def model_needs_retrain() -> bool:
@@ -526,7 +533,7 @@ def _replay_symbol(symbol: str, tfs: list, store, cfg: dict,
             prior = [h for h in history if h["formed_index"] < i]
             dynamic = symbol_stats.dynamic_features(prior)
             for s in setups:
-                y = label_setup(df, s, horizon)
+                y = label_setup(df, s, horizon, entry_valid_bars=int(cfg.get("smc", {}).get("entry_valid_bars", 24)))
                 if y is None:
                     continue
                 s["features"] = make_features(sub, s, smc, cfg["smc"],

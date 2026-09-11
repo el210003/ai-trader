@@ -28,36 +28,49 @@ EXPIRED_OPEN = "EXPIRED_OPEN"
 VOID = "VOID"
 
 
-def _resolve_one(df, r: dict, horizon: int):
+def _resolve_one(df, r: dict, horizon: int, entry_valid_bars: int = 24):
     """Resolve one pending setup row against candles. Returns outcome dict or
     None when there is not enough future data yet (retry next cycle)."""
     entry, sl, tp = r["entry"], r["stop_loss"], r["take_profit"]
     direction = (r["direction"] or "").lower()
+    tol = 0.0
+    try:
+        import json as _json
+        _p = _json.loads(r.get("payload") or "{}") if r.get("payload") else {}
+        tol = float(_p.get("fill_tolerance") or 0.0)
+    except Exception:
+        tol = 0.0
     if entry is None or sl is None or tp is None or direction not in ("long", "short"):
         return {**_base(r), "result": VOID, "resolved_at": int(time.time())}
     risk = abs(entry - sl)
     if risk <= 0:
         return {**_base(r), "result": VOID, "resolved_at": int(time.time())}
 
+    formed_ref = r.get("first_formed_at") or r.get("formed_at")
     times = df["time"].values
-    start = int(np.searchsorted(times, r["formed_at"], side="right"))
+    start = int(np.searchsorted(times, formed_ref, side="right"))
     n = len(df)
     if start >= n:
         return None                      # no future bars yet
-    if start == 0 and times[0] > r["formed_at"]:
+    if start == 0 and times[0] > formed_ref:
         return {**_base(r), "result": VOID, "resolved_at": int(time.time())}
 
     filled = False
     fill_time = None
     mfe = mae = 0.0
+    valid = int(entry_valid_bars)
+    fill_deadline = start + max(1, valid) if valid > 0 else start + max(1, int(horizon))
     end = min(n, start + max(1, int(horizon)))
     for k in range(start, end):
         hi = float(df["high"].iat[k])
         lo = float(df["low"].iat[k])
         if direction == "long":
             if not filled:
-                if lo <= entry:
+                if lo <= entry + tol:
                     filled, fill_time = True, int(times[k])
+                elif k >= fill_deadline:
+                    return _outcome(r, EXPIRED_UNFILLED, False, None, None, 0.0, mae,
+                                    min(k - start, valid if valid > 0 else horizon), None)
                 else:
                     continue
             # conservative: SL wins same-bar ties (mirrors the labeler)
@@ -74,8 +87,11 @@ def _resolve_one(df, r: dict, horizon: int):
             mae = max(mae, (entry - lo) / risk)
         else:
             if not filled:
-                if hi >= entry:
+                if hi >= entry - tol:
                     filled, fill_time = True, int(times[k])
+                elif k >= fill_deadline:
+                    return _outcome(r, EXPIRED_UNFILLED, False, None, None, 0.0, mae,
+                                    min(k - start, valid if valid > 0 else horizon), None)
                 else:
                     continue
             if hi >= sl:
@@ -131,6 +147,7 @@ def resolve_pending(store, cfg: dict, verbose: bool = False) -> int:
     """Resolve all pending journaled setups. Returns the number resolved."""
     horizon = int(cfg.get("ai", {}).get("ml", {}).get("label_horizon_bars", 96))
     lookback = int(cfg.get("outcomes", {}).get("lookback_days", 30))
+    entry_valid = int(cfg.get("smc", {}).get("entry_valid_bars", 24))
     pending = store.pending_setups(lookback)
     if not pending:
         return 0
@@ -144,7 +161,7 @@ def resolve_pending(store, cfg: dict, verbose: bool = False) -> int:
             continue
         for r in rows:
             try:
-                out = _resolve_one(df, r, horizon)
+                out = _resolve_one(df, r, horizon, entry_valid_bars=entry_valid)
             except Exception:
                 continue
             if out is not None:

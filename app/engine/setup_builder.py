@@ -60,6 +60,8 @@ def build_setups(symbol: str, tf: str, df, smc: dict, cfg: dict,
     max_rr = float(cfg.get("max_rr", 5.0))
     buffer_atr = float(cfg.get("sl_buffer_atr", 0.25))
     min_risk = float(cfg.get("min_risk_atr", 0.75)) * atr_v
+    retest_buffer = float(cfg.get("retest_buffer_atr", 0.20)) * atr_v
+    entry_valid = int(cfg.get("entry_valid_bars", 24))
     setups: List[dict] = []
 
     if atr_v <= 0:
@@ -90,6 +92,10 @@ def build_setups(symbol: str, tf: str, df, smc: dict, cfg: dict,
 
         cands = []
         for ztype, z in zones:
+            # entry-validity window: expire stale POIs (zone formed too long ago)
+            zone_age = n - 1 - z["origin_index"]
+            if entry_valid > 0 and zone_age > entry_valid:
+                continue
             mid = (z["top"] + z["bottom"]) / 2.0
             if direction == "long":
                 good_side = z["top"] <= close            # retest entry below price
@@ -214,6 +220,8 @@ def build_setups(symbol: str, tf: str, df, smc: dict, cfg: dict,
             "entry": float(entry), "stop_loss": float(sl), "take_profit": float(tp),
             "rr": round(float(rr), 2),
             "entry_distance_atr": round(float(run_atr), 2),
+            "fill_tolerance": round(float(retest_buffer), 8),
+            "atr": float(atr_v),
             "entry_zone": {"type": ztype, "top": float(z["top"]), "bottom": float(z["bottom"]),
                            "origin_time": int(z["origin_time"]), "origin_index": int(z["origin_index"])},
             "range_position": round(float(range_pos), 3),

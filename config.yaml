@@ -64,6 +64,10 @@ smc:
                              # entry toward TP (they are look-back, not actionable)
   skip_already_tested: true  # skip setups whose entry zone was already retested
                              # since it formed (the fill opportunity is gone)
+  retest_buffer_atr: 0.20    # a limit is 'filled' when price comes within this
+                             # many ATRs of the entry (catches 1-3 pip near-misses)
+  entry_valid_bars: 24       # expire a setup that hasn't filled within this many
+                             # bars of its zone forming (kills stale late fills)
   atr_period: 14
 
 ai:
