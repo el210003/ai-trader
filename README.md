@@ -93,6 +93,17 @@ Every qualified setup is **journaled** to the `setups_history` table for forward
   `train --compare` prints the delta; every training run reports permutation
   feature importances.
 
+## Multi-timeframe confluence (M15 entries, H1/H4 context)
+
+M15 is the entry timeframe; H1/H4 are projected into every M15 setup as
+confluence: HTF structure alignment, entry in the HTF discount/premium half,
+entry at an HTF order block/FVG, HTF liquidity pools as take-profit targets,
+plus CSM alignment. Four ML features (`htf_trend_align`, `htf_pd_alignment`,
+`entry_in_htf_zone`, `htf_tp_distance_atr`) and an optional
+`require_htf_bias` hard filter (off by default) — see
+`docs/mtf-confluence.md`. HTF bars are sliced with no look-ahead (only bars
+closed before the entry bar), identical in training and live analysis.
+
 ## Currency Strength Meter (CSM28 port)
 
 The CSM28 Pine concept is built in (`app/csm.py`): for each of the 28 standard

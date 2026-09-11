@@ -9,6 +9,7 @@ from .csm import update_csm
 from .data.store import Store
 from .data import mt5_client
 from .engine.setup_builder import build_setups
+from .engine.mtf import build_htf_context
 from .ai.features import make_features, FEATURES
 from .ai.symbol_stats import SymbolStats
 from .ai.ml_model import SetupML
@@ -17,8 +18,8 @@ from .ai.hybrid import fuse
 from .util import jsonable
 
 
-def build_llm_context(setup: dict, smc: dict) -> dict:
-    return {
+def build_llm_context(setup: dict, smc: dict, htf_ctx: dict = None) -> dict:
+    ctx = {
         "task": "Evaluate this SMC trade setup. Respond with the JSON schema from your instructions.",
         "symbol": setup["symbol"],
         "timeframe": setup["tf"],
@@ -38,6 +39,12 @@ def build_llm_context(setup: dict, smc: dict) -> dict:
         "atr": smc["atr"],
         "last_close": smc["last_close"],
     }
+    if htf_ctx:
+        ctx["htf_context"] = {
+            htf: {"trend": c.get("trend"), "equilibrium": c.get("equilibrium")}
+            for htf, c in htf_ctx.items()
+        }
+    return ctx
 
 
 def analyze_symbol(store: Store, symbol: str, tf: str, cfg: dict,
@@ -58,14 +65,29 @@ def analyze_symbol(store: Store, symbol: str, tf: str, cfg: dict,
             return None
 
     smc = smc_mod.analyze(df, cfg["smc"])
-    setups = build_setups(symbol, tf, df, smc, cfg["smc"])
+
+    # MTF confluence context: higher timeframes for this entry TF (H1/H4 for M15)
+    mtf_cfg = cfg.get("mtf", {})
+    htf_ctx = {}
+    csm_dir = None
+    if mtf_cfg.get("enabled", True):
+        htf_ctx = build_htf_context(symbol, tf, cfg,
+                                    up_to_time=int(df["time"].iat[-1]),
+                                    load_df=store.load_candles)
+        csm = store.load_csm()
+        if csm:
+            csm_dir = (csm.get("aligned") or {}).get(symbol)
+
+    setups = build_setups(symbol, tf, df, smc, cfg["smc"], htf_ctx=htf_ctx,
+                          csm_dir=csm_dir, mtf_cfg=mtf_cfg)
 
     static = symbol_stats.static_features(df, symbol) if symbol_stats else None
     for s in setups:
         # At live inference the dynamic per-symbol features are neutral
         # (no labeled history available at prediction time).
         s["features"] = make_features(df, s, smc, cfg["smc"],
-                                      symbol_static=static, symbol_dynamic=None)
+                                      symbol_static=static, symbol_dynamic=None,
+                                      htf_ctx=htf_ctx)
         s["ml_prob"] = ml.predict(s["features"])
 
     best = {}
@@ -89,7 +111,7 @@ def analyze_symbol(store: Store, symbol: str, tf: str, cfg: dict,
             if mp is None or mp >= gate:      # gate: skip when ML says hopeless
                 to_call.append(s)
         if to_call:
-            contexts = [build_llm_context(s, smc) for s in to_call]
+            contexts = [build_llm_context(s, smc, htf_ctx) for s in to_call]
             if len(to_call) == 1:
                 to_call[0]["llm"] = llm.analyze_setup(contexts[0])
             else:
@@ -120,6 +142,11 @@ def analyze_symbol(store: Store, symbol: str, tf: str, cfg: dict,
             "last_close": smc["last_close"],
             "swings": smc["swings"][-40:],
         },
+        "htf": {htf: {"trend": c.get("trend"),
+                      "equilibrium": c.get("equilibrium"),
+                      "zones": len(c.get("zones", [])),
+                      "pools": len(c.get("buyside", [])) + len(c.get("sellside", []))}
+                for htf, c in htf_ctx.items()},
         "setups": chosen,
     }
     store.save_analysis(symbol, tf, jsonable(analysis))
@@ -256,20 +283,28 @@ def run_all(cfg: dict, store: Store = None, demo: bool = False,
 
 
 # ------------------------------------------------------------ model versioning
-FEATURE_SET_MARKER = ROOT / "data" / "models" / ".feature_set_v2_per_symbol"
+FEATURE_SET_MARKER = ROOT / "data" / "models" / ".feature_set"
+
+
+def feature_set_hash() -> str:
+    """Content hash of the current feature list — any feature change
+    invalidates deployed models without renaming marker files."""
+    import hashlib
+    return hashlib.md5(json.dumps(FEATURES).encode()).hexdigest()[:12]
 
 
 def model_needs_retrain() -> bool:
-    """True when the deployed model predates the current feature set
-    (per-symbol features). Auto-retrain on first use after an upgrade."""
-    if not FEATURE_SET_MARKER.exists():
+    """True when the deployed model predates the current feature set.
+    Auto-retrain on first use after an upgrade."""
+    try:
+        return FEATURE_SET_MARKER.read_text().strip() != feature_set_hash()
+    except OSError:
         return True
-    return False
 
 
 def mark_model_retrained():
     FEATURE_SET_MARKER.parent.mkdir(parents=True, exist_ok=True)
-    FEATURE_SET_MARKER.touch()
+    FEATURE_SET_MARKER.write_text(feature_set_hash())
 
 
 def is_model_stale(cfg: dict, ml: SetupML = None) -> bool:
@@ -338,12 +373,22 @@ def train(cfg: dict, store: Store = None, demo: bool = False,
             n = len(df)
             static = symbol_stats.static_features(df, symbol)
             history = history_by_pair.setdefault((symbol, tf), [])
+            mtf_on = cfg.get("mtf", {}).get("enabled", True)
+            df_cache: dict = {}     # (symbol, htf) -> full HTF frame
+            ctx_cache: dict = {}    # (symbol, htf, last closed HTF bar) -> ctx
             made = 0
             for i in range(warmup, n - horizon - 1, step):
                 sub = df.iloc[:i + 1].reset_index(drop=True)
                 try:
                     smc = smc_mod.analyze(sub, cfg["smc"])
-                    setups = build_setups(symbol, tf, sub, smc, cfg["smc"])
+                    htf_ctx = build_htf_context(symbol, tf, cfg,
+                                                up_to_time=int(sub["time"].iat[-1]),
+                                                load_df=store.load_candles,
+                                                df_cache=df_cache,
+                                                ctx_cache=ctx_cache) if mtf_on else {}
+                    setups = build_setups(symbol, tf, sub, smc, cfg["smc"],
+                                          htf_ctx=htf_ctx,
+                                          mtf_cfg=cfg.get("mtf", {}))
                 except Exception:
                     continue
                 # dynamic features: only outcomes that formed before i (no look-ahead)
@@ -355,7 +400,8 @@ def train(cfg: dict, store: Store = None, demo: bool = False,
                         continue
                     s["features"] = make_features(sub, s, smc, cfg["smc"],
                                                   symbol_static=static,
-                                                  symbol_dynamic=dynamic)
+                                                  symbol_dynamic=dynamic,
+                                                  htf_ctx=htf_ctx)
                     rows.append(s["features"])
                     labels.append(y)
                     history.append({

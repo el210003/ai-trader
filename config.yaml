@@ -111,6 +111,14 @@ csm:
   min_pairs: 10             # skip computation if fewer pairs available
   min_interval_seconds: 30  # throttle between snapshot refreshes
 
+# Multi-timeframe confluence: higher timeframes (H1/H4 for M15 entries) are
+# projected into every setup as bias/zone/PD/liquidity confluence + ML features.
+# H4/H1 remain the context; M15 is the entry timeframe.
+mtf:
+  enabled: true
+  require_htf_bias: false   # true = drop M15 setups whose nearest HTF (H1) trend opposes
+  zone_buffer_atr: 0.5      # M15-zone proximity to an HTF OB/FVG, in entry-TF ATRs
+
 dashboard:
   host: 0.0.0.0
   port: 8000

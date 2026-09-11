@@ -70,6 +70,11 @@ DEFAULTS = {
         "min_pairs": 10,
         "min_interval_seconds": 30,
     },
+    "mtf": {
+        "enabled": True,
+        "require_htf_bias": False,
+        "zone_buffer_atr": 0.5,
+    },
     "dashboard": {"host": "127.0.0.1", "port": 8000, "refresh_seconds": 60,
                   "auto_run_interval": 0, "bar_close_watcher": False,
                   "bar_poll_seconds": 10},

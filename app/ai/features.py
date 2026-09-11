@@ -26,12 +26,19 @@ FEATURES = [
     "symbol_setup_density",    # high-vol / trending signal (inverse bars-per-ATR)
     "symbol_recent_win_rate",  # rolling win rate over recent setups (None on cold-start)
     "symbol_avg_rr_realized",  # mean realized RR on this pair (None on cold-start)
+
+    # ----- MTF confluence (4) — H1/H4 context projected onto the entry TF -----
+    "htf_trend_align",         # mean(1 HTF trend matches direction, 0 opposed); 0.5 = no ctx
+    "htf_pd_alignment",        # mean(1 entry in correct HTF premium/discount half)
+    "entry_in_htf_zone",       # 1 entry zone overlaps/near a same-direction HTF zone
+    "htf_tp_distance_atr",     # entry -> nearest HTF liquidity pool (ATR units, cap 20)
 ]
 
 
 def make_features(df, setup: dict, smc: dict, cfg: dict,
                   symbol_static: dict = None,
-                  symbol_dynamic: dict = None) -> dict:
+                  symbol_dynamic: dict = None,
+                  htf_ctx: dict = None) -> dict:
     """Build the full feature dict for one setup.
 
     Args:
@@ -75,6 +82,29 @@ def make_features(df, setup: dict, smc: dict, cfg: dict,
     ts = pd.to_datetime(df["time"].iat[-1], unit="s", utc=True)
     hour = ts.hour + ts.minute / 60.0
 
+    # ---- MTF confluence metrics (computed by the setup builder, stored on the setup)
+    htf = setup.get("htf_metrics") or {}
+    trend_align = htf.get("trend_align")
+    pd_align = htf.get("pd_alignment")
+
+    # entry -> nearest HTF liquidity pool in the profit direction (ATR units)
+    entry = float(setup["entry"])
+    cap = 20.0
+    tp_dist = cap
+    if htf_ctx:
+        want_pools = "buyside" if direction == "long" else "sellside"
+        pools = []
+        for c in htf_ctx.values():
+            pools.extend(c.get(want_pools, []))
+        if direction == "long":
+            beyond = [p for p in pools if p > entry]
+            if beyond:
+                tp_dist = min(beyond) - entry
+        else:
+            beyond = [p for p in pools if p < entry]
+            if beyond:
+                tp_dist = entry - max(beyond)
+
     return {
         "rr": float(setup["rr"]),
         "atr_pct": float(atr_v / close * 100.0),
@@ -91,6 +121,10 @@ def make_features(df, setup: dict, smc: dict, cfg: dict,
         "symbol_setup_density": float((symbol_static or {}).get("symbol_setup_density", 0.0)),
         "symbol_recent_win_rate": (symbol_dynamic or {}).get("symbol_recent_win_rate"),
         "symbol_avg_rr_realized": (symbol_dynamic or {}).get("symbol_avg_rr_realized"),
+        "htf_trend_align": float(trend_align) if trend_align is not None else 0.5,
+        "htf_pd_alignment": float(pd_align) if pd_align is not None else 0.5,
+        "entry_in_htf_zone": float(htf.get("in_htf_zone") or 0.0),
+        "htf_tp_distance_atr": float(min(cap, tp_dist / atr_v)),
     }
 
 
@@ -105,6 +139,10 @@ def feature_vector(feats: dict):
                 out.append(0.5)
             elif f == "symbol_avg_rr_realized":
                 out.append(1.0)
+            elif f in ("htf_trend_align", "htf_pd_alignment"):
+                out.append(0.5)
+            elif f == "htf_tp_distance_atr":
+                out.append(20.0)
             else:
                 out.append(0.0)
         else:

@@ -163,7 +163,7 @@ HistGradientBoostingClassifier(
 )
 ```
 
-Conservative on purpose: with only ~hundreds-to-thousands of samples and 15 features,
+Conservative on purpose: with only ~hundreds-to-thousands of samples and 19 features,
 deep trees overfit fast.
 
 ### Training procedure
@@ -297,7 +297,7 @@ To set expectations:
 ## Inference flow
 
 ```
-SMC engine   → setup with 15 features
+SMC engine   → setup with 19 features
              → model.predict_proba(features)  →  P(win) in [0, 1]
                                                    ↓
 hybrid score = 0.6 * ml_score  +  0.4 * llm_confidence
@@ -358,3 +358,23 @@ venv).
 - ~~Per-symbol models~~ — evaluated and rejected: see
   [Per-symbol context](#per-symbol-context-4-added-in-the-v2-feature-set);
   per-symbol *features* in one global model won.
+
+
+## MTF confluence features (v3)
+
+Four features project higher-timeframe context onto each entry-TF setup
+(computed by `app/engine/mtf.py`, stored per setup as `htf_metrics`):
+
+- `htf_trend_align` — mean agreement of HTF (H1/H4) structure trend with the
+  setup direction (0–1; 0.5 when no HTF context, e.g. setups on the top TF)
+- `htf_pd_alignment` — mean(1 if entry is in the HTF discount half for longs /
+  premium half for shorts)
+- `entry_in_htf_zone` — 1 if the entry zone overlaps or sits within
+  `mtf.zone_buffer_atr` of a same-direction HTF order block / FVG
+- `htf_tp_distance_atr` — distance from entry to the nearest HTF liquidity
+  pool in the profit direction (ATR units, capped at 20; 20 = no HTF target)
+
+No look-ahead: an HTF bar counts only when its close time ≤ the entry bar's
+open time — the same slicing runs in live analysis and the training replay.
+The deployed model auto-invalidates on feature-set change via a content hash
+of the FEATURES list (`data/models/.feature_set`).

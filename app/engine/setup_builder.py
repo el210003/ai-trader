@@ -3,6 +3,11 @@
 Combines SMC context into concrete setups:
   bias (structure) + liquidity sweep trigger + fresh OB/FVG entry zone
   located in the correct premium/discount half -> entry / SL / TP with RR.
+
+Optional MTF confluence (app/engine/mtf.py context passed in via `htf_ctx`):
+HTF structure/zone/PD confluence lines, HTF liquidity pools as TP candidates,
+an optional require_htf_bias hard filter, and per-setup `htf_metrics` used by
+the ML features.
 """
 from typing import List, Optional
 
@@ -12,11 +17,14 @@ def _targets_above(levels: List[float], floor: float) -> List[float]:
 
 
 def _target_liquidity(direction: str, entry: float, close: float, risk: float,
-                      smc: dict, min_rr: float, default_rr: float) -> tuple:
+                      smc: dict, min_rr: float, default_rr: float,
+                      extra_pools: List[float] = ()) -> tuple:
     """Nearest opposing liquidity pool / swing level beyond current price that
-    offers at least min_rr. Falls back to default_rr multiple of risk."""
+    offers at least min_rr. Falls back to default_rr multiple of risk.
+    `extra_pools` merges HTF pools (structural targets) into the candidates."""
     if direction == "long":
-        pool_levels = [p["price"] for p in smc["liquidity_pools"] if p["side"] == "buyside"]
+        pool_levels = [p["price"] for p in smc["liquidity_pools"] if p["side"] == "buyside"] \
+                      + list(extra_pools)
         swing_levels = [s["price"] for s in smc["swings"] if s["type"] == "high"]
         floor = max(entry, close)
         cands = _targets_above(pool_levels + swing_levels, floor)
@@ -26,7 +34,8 @@ def _target_liquidity(direction: str, entry: float, close: float, risk: float,
                 return t, rr
         return entry + default_rr * risk, default_rr
     else:
-        pool_levels = [p["price"] for p in smc["liquidity_pools"] if p["side"] == "sellside"]
+        pool_levels = [p["price"] for p in smc["liquidity_pools"] if p["side"] == "sellside"] \
+                      + list(extra_pools)
         swing_levels = [s["price"] for s in smc["swings"] if s["type"] == "low"]
         ceil_ = min(entry, close)
         cands = sorted({p for p in pool_levels + swing_levels if p < ceil_}, reverse=True)
@@ -37,7 +46,9 @@ def _target_liquidity(direction: str, entry: float, close: float, risk: float,
         return entry - default_rr * risk, default_rr
 
 
-def build_setups(symbol: str, tf: str, df, smc: dict, cfg: dict) -> List[dict]:
+def build_setups(symbol: str, tf: str, df, smc: dict, cfg: dict,
+                 htf_ctx: dict = None, csm_dir: str = None,
+                 mtf_cfg: dict = None) -> List[dict]:
     close = smc["last_close"]
     atr_v = smc["atr"]
     rng = smc["dealing_range"]
@@ -106,7 +117,10 @@ def build_setups(symbol: str, tf: str, df, smc: dict, cfg: dict) -> List[dict]:
         if len(zones) > 1:
             conf.append(f"{len(zones)} fresh zones stacked")
 
-        # ---- entry / SL / TP
+        # ---- entry / SL / TP  (HTF pools join the TP candidates)
+        htf_pools: List[float] = []
+        for c in (htf_ctx or {}).values():
+            htf_pools.extend(c.get("buyside" if direction == "long" else "sellside", []))
         if direction == "long":
             entry = min(z["top"], close)
             sweep_lows = [df["low"].iat[s["index"]] for s in recent]
@@ -118,7 +132,8 @@ def build_setups(symbol: str, tf: str, df, smc: dict, cfg: dict) -> List[dict]:
                 risk = min_risk
             if risk <= 0:
                 continue
-            tp, rr = _target_liquidity("long", entry, close, risk, smc, min_rr, default_rr)
+            tp, rr = _target_liquidity("long", entry, close, risk, smc, min_rr, default_rr,
+                                       extra_pools=htf_pools)
         else:
             entry = max(z["bottom"], close)
             sweep_highs = [df["high"].iat[s["index"]] for s in recent]
@@ -130,13 +145,47 @@ def build_setups(symbol: str, tf: str, df, smc: dict, cfg: dict) -> List[dict]:
                 risk = min_risk
             if risk <= 0:
                 continue
-            tp, rr = _target_liquidity("short", entry, close, risk, smc, min_rr, default_rr)
+            tp, rr = _target_liquidity("short", entry, close, risk, smc, min_rr, default_rr,
+                                       extra_pools=htf_pools)
 
         if rr > max_rr:                  # cap fantasy RR (target too far to be meaningful)
             tp = entry + max_rr * risk if direction == "long" else entry - max_rr * risk
             rr = max_rr
         if rr < min_rr:
             continue
+
+        # ---- MTF confluence (H1/H4 context projected onto this entry TF)
+        want_trend = "bullish" if direction == "long" else "bearish"
+        htf_lines, trend_vals, pd_vals, in_zone = [], [], [], 0.0
+        zone_buf = float((mtf_cfg or {}).get("zone_buffer_atr", 0.5)) * atr_v
+        for htf, c in (htf_ctx or {}).items():        # insertion order: nearest HTF first
+            t_ok = c.get("trend") == want_trend
+            trend_vals.append(1.0 if t_ok else 0.0)
+            if t_ok:
+                htf_lines.append(f"{htf} structure aligned")
+            eq = c.get("equilibrium")
+            if eq is not None:
+                half = "discount" if direction == "long" else "premium"
+                good_half = (entry <= eq) if direction == "long" else (entry >= eq)
+                pd_vals.append(1.0 if good_half else 0.0)
+                if good_half:
+                    htf_lines.append(f"entry in {htf} {half}")
+            for hz in c.get("zones", []):
+                if hz["direction"] != want_zone_dir:
+                    continue
+                if not (z["bottom"] > hz["top"] + zone_buf or z["top"] < hz["bottom"] - zone_buf):
+                    htf_lines.append(f"entry at {htf} {hz['type'].replace('_', ' ')}")
+                    in_zone = 1.0
+                    break
+        if csm_dir == direction:
+            htf_lines.append("CSM aligned across timeframes")
+        conf.extend(htf_lines)
+
+        # optional hard filter: nearest HTF (e.g. H1 for M15) must agree
+        if (mtf_cfg or {}).get("require_htf_bias", False) and htf_ctx:
+            nearest = next(iter(htf_ctx))
+            if htf_ctx[nearest].get("trend") != want_trend:
+                continue
 
         range_span = rng["top"] - rng["bottom"]
         range_pos = (entry - rng["bottom"]) / range_span if range_span > 0 else 0.5
@@ -151,6 +200,11 @@ def build_setups(symbol: str, tf: str, df, smc: dict, cfg: dict) -> List[dict]:
             "trend_aligned": bool(aligned),
             "has_recent_sweep": bool(recent),
             "confluences": conf,
+            "htf_metrics": {
+                "trend_align": sum(trend_vals) / len(trend_vals) if trend_vals else None,
+                "pd_alignment": sum(pd_vals) / len(pd_vals) if pd_vals else None,
+                "in_htf_zone": in_zone,
+            },
             "formed_index": n - 1,
             "formed_at": int(df["time"].iat[-1]),
             "last_close": close,
