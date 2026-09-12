@@ -10,9 +10,8 @@ venv/
 .venv/
 env/
 
-# secrets / machine-specific launchers
+# secrets only (launchers are committed and portable now)
 .env
-serve.bat
 
 # os/editor
 Thumbs.db
