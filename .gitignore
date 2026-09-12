@@ -2,8 +2,8 @@
 __pycache__/
 *.pyc
 
-# local data (db, models, caches, journals)
-data/
+# local data (db, models, caches, journals) - ROOT only, not the app/data package
+/data/
 
 # environments
 venv/
