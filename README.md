@@ -14,25 +14,47 @@ MT5 ──► SQLite ──► SMC engine ──► trade setups ──► ML (P
 
 ## Quick start (no MT5 needed)
 
-Use the bundled launchers (they pin everything to your venv — see
-[One environment for everything](#important-one-environment-for-everything)):
+The repo is self-contained and portable. Two ways to run it:
+
+### A) Fresh machine — one-time setup
 
 ```bat
-ingest.bat        :: synthetic OHLC for all symbols/timeframes
-train.bat         :: label historical setups + train ML model
+setup.bat        :: creates venv, installs requirements, verifies imports
+setx MINIMAX_API_KEY your-key-here   :: your LLM key (see config.yaml -> ai.llm)
+```
+`setup.bat` is idempotent and requires only Python 3.10+ on PATH. After it,
+you can use any launcher below; each auto-picks the project venv if present
+(falls back to system Python).
+
+### B) Run it (bundled portable launchers — pin everything to your venv)
+
+```bat
+ingest.bat        :: synthetic OHLC for all symbols/timeframes  (demo)
+train.bat         :: label historical setups + train the ML model
 analyze.bat       :: SMC + hybrid AI on stored candles
 serve.bat         :: open http://127.0.0.1:8000
+
+outcomes.bat      :: resolve pending setups + print performance summary
+insights.bat      :: auto-diagnosis + feature-importance report
+check_env.bat     :: verify deps + model/env consistency
 ```
 
 Or with an activated venv:
 
 ```bash
 pip install -r requirements.txt
-python -m app.main ingest --demo
+python -m app.main ingest --demo      # synthetic data so you can try it offline
 python -m app.main train
 python -m app.main analyze
-python -m app.main serve
+python -m app.main serve             # dashboard refreshes on each bar close
 ```
+
+**Recommended day-to-day:** `serve.bat` is the main loop — it runs the
+bar-close watcher (analyzes confirmed M15/H1/H4 closes in parallel across your
+CPU cores), keeps the CSM strip and setup journal fresh, resolves outcomes
+automatically, and auto-retrains the model when the feature set or setup
+builder changes. Editing `config.yaml` → `mtf.entry_tf` (default `M15`) sets
+which timeframe generates setups; H1/H4 are context.
 
 ## Live MT5 setup
 
@@ -147,11 +169,14 @@ Config: `csm:` section (`lookback`, `ma_length`, `ma_type`, `display: MA|ROC`,
 | Command | Purpose |
 |---|---|
 | `ingest [--demo] [--all-symbols]` | Pull OHLC into SQLite |
-| `analyze [--all-symbols]` | Run SMC + ML + LLM on stored candles (auto-retrains after feature-set upgrades) |
+| `analyze [--all-symbols]` | Run SMC + ML + LLM on stored candles (auto-retrains after feature-set or builder upgrades) |
 | `train [--all-symbols] [--baseline] [--compare]` | Label history, train ML; save/compare metrics baseline |
-| `serve [--all-symbols] [--auto N] [--on-bar-close]` | Start the dashboard |
+| `serve [--all-symbols] [--auto N] [--on-bar-close]` | Start the dashboard (bar-close watcher analyzes in parallel) |
 | `run --interval 60` | Continuous ingest + analyze loop |
 | `history [--symbol X] [--tf X] [--limit N]` | Print the journaled setups (forward-validation data) |
+| `outcomes` | Resolve pending setups + print win rate / expectancy / calibration summary |
+| `insights` | Auto-diagnosis (SL/TP/threshold/regime findings) + per-feature report |
+| `migrate-journal` | Collapse duplicate journal rows into one per real setup (backs up first) |
 | `list-symbols [--all-symbols]` | Print the symbol list the app will use |
 | `select-symbols [--enable X ...] [--disable X ...] [--all] [--none]` | Manage the persistent enable/disable list |
 
@@ -232,10 +257,13 @@ breaks loading. Always run every command from the same environment —
 the included `.bat` launchers pin everything to `venv\Scripts\python.exe`:
 
 ```bat
+setup.bat        :: bootstrap (venv + deps + verify)
 serve.bat        :: dashboard (venv)
 train.bat        :: retrain ML model (venv)
 ingest.bat       :: pull MT5 data (venv)
 analyze.bat      :: SMC + AI analysis (venv)
+outcomes.bat     :: resolve setups + performance summary (venv)
+insights.bat     :: diagnosis + feature report (venv)
 check_env.bat    :: verify deps + model/env consistency (venv)
 ```
 
