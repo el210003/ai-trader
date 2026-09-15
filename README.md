@@ -93,7 +93,7 @@ serve.bat            :: Trade tab shows every would-be order with lot/price/SL/T
 ::    lower execution.risk_percent to 0.25-0.5
 
 :: 3. manage: runtime toggle / flatten / trade log live on the Trade tab
-::    (min score / min ML prob gates are editable there too — persisted)
+::    (gates + magic/comment order identity are editable there too — persisted)
 python -m app.main trade --status
 python -m app.main trade --flatten
 ```

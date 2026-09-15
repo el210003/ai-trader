@@ -569,20 +569,36 @@ def create_app(cfg: dict) -> FastAPI:
     class ExecutionParamsBody(BaseModel):
         min_score: float = None
         min_ml_prob: float = None
+        magic: int = None
+        comment: str = None
 
     @app.post("/api/execution/params")
     def execution_params(body: ExecutionParamsBody):
-        """Runtime-adjust the score / ML-probability execution gates. Effective
-        on the next engine scan; persisted to data/execution_overrides.json so
-        the new values survive restarts (config.yaml is left untouched)."""
-        if body.min_score is None and body.min_ml_prob is None:
+        """Runtime-adjust execution parameters. Gates: min_score (0-100) /
+        min_ml_prob (0-1). Identity: magic (positive int tagging every bot
+        order — changing it orphans orders placed under the old magic) and
+        comment (truncated to MT5's 31-char display limit). Effective on the
+        next engine scan / next order; persisted to data/execution_overrides.json
+        so the new values survive restarts (config.yaml is left untouched)."""
+        comment = (body.comment or "").strip()
+        if (body.min_score is None and body.min_ml_prob is None
+                and body.magic is None and not comment):
             return JSONResponse({"ok": False, "error": "nothing to update"},
                                 status_code=422)
-        gates = execution_engine.set_gates(min_score=body.min_score,
-                                           min_ml_prob=body.min_ml_prob)
-        debug(f"[execution] gates set via API: "
-              f"min_score={gates['min_score']:g} min_ml_prob={gates['min_ml_prob']:g}")
-        return {"ok": True, **gates}
+        out = {}
+        if body.min_score is not None or body.min_ml_prob is not None:
+            out.update(execution_engine.set_gates(min_score=body.min_score,
+                                                  min_ml_prob=body.min_ml_prob))
+        if body.magic is not None or comment:
+            try:
+                out.update(execution_engine.set_identity(
+                    magic=body.magic, comment=comment or None))
+            except (TypeError, ValueError) as e:
+                return JSONResponse({"ok": False, "error": str(e)},
+                                    status_code=422)
+        debug("[execution] params set via API: " +
+              ", ".join(f"{k}={v}" for k, v in out.items()))
+        return {"ok": True, **out}
 
     @app.post("/api/execution/flatten")
     def execution_flatten():

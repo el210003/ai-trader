@@ -27,10 +27,13 @@ from pathlib import Path
 from ..logsetup import debug
 from . import mt5_trader
 
-# Runtime-adjustable gates (Trade tab / API). Values are clamped to these
-# ranges no matter where they come from (config.yaml, overrides file, API).
+# Runtime-adjustable parameters (Trade tab / API): the strictness gates plus
+# the bot's order identity. Values are clamped/validated no matter where they
+# come from (config.yaml, overrides file, API).
 GATE_DEFAULTS = {"min_score": 70.0, "min_ml_prob": 0.50}
 GATE_LIMITS = {"min_score": (0.0, 100.0), "min_ml_prob": (0.0, 1.0)}
+COMMENT_MAX = 31                     # MT5 order-comment display limit
+MAGIC_MAX = 2**63 - 1                # MT5 stores the magic as an unsigned long
 
 
 def trade_identity(symbol: str, tf: str, direction: str, setup: dict) -> str:
@@ -46,7 +49,7 @@ class ExecutionEngine:
                  verbose: bool = True, dry_run_override: bool = None):
         self.cfg = cfg
         self.x = dict(cfg.get("execution") or {})
-        self._apply_gate_overrides()      # UI/CLI overrides beat config.yaml
+        self._apply_overrides()           # UI/CLI overrides beat config.yaml
         self.store = store
         self.verbose = verbose
         self.allowed_symbols = set(allowed_symbols) if allowed_symbols else None
@@ -79,11 +82,12 @@ class ExecutionEngine:
         except (TypeError, ValueError):
             return default
 
-    # ------------------------------------------------------- runtime gates
-    # min_score / min_ml_prob can be changed live from the Trade tab (or the
-    # HTTP API). config.yaml stays untouched (it is full of comments) —
-    # overrides live in data/execution_overrides.json and are re-applied on
-    # every engine start, so an adjustment survives restarts.
+    # -------------------------------------------------- runtime parameters
+    # min_score / min_ml_prob (gates) and magic / comment (order identity) can
+    # be changed live from the Trade tab (or the HTTP API). config.yaml stays
+    # untouched (it is full of comments) — overrides live in
+    # data/execution_overrides.json and are re-applied on every engine start,
+    # so an adjustment survives restarts.
     def _overrides_path(self) -> Path:
         root = Path(self.cfg.get("_root") or ".")
         return root / "data" / "execution_overrides.json"
@@ -96,7 +100,17 @@ class ExecutionEngine:
         except (OSError, ValueError):
             return {}
 
-    def _apply_gate_overrides(self):
+    def _save_overrides(self, patch: dict):
+        ov = self._load_overrides()
+        ov.update(patch)
+        try:
+            self._overrides_path().parent.mkdir(parents=True, exist_ok=True)
+            with open(self._overrides_path(), "w", encoding="utf-8") as f:
+                json.dump(ov, f, indent=2)
+        except OSError as e:
+            debug(f"[execution] could not persist execution overrides: {e}")
+
+    def _apply_overrides(self):
         ov = self._load_overrides()
         for key in GATE_DEFAULTS:
             if key not in ov:
@@ -106,6 +120,15 @@ class ExecutionEngine:
                 self.x[key] = max(lo, min(hi, float(ov[key])))
             except (TypeError, ValueError):
                 pass
+        if "magic" in ov:
+            try:
+                m = int(ov["magic"])
+                if 1 <= m <= MAGIC_MAX:
+                    self.x["magic"] = m
+            except (TypeError, ValueError):
+                pass
+        if "comment" in ov:
+            self.x["comment"] = str(ov["comment"]).strip()[:COMMENT_MAX] or "ai-trader"
 
     def gates(self) -> dict:
         """Current gate values (live snapshot — includes UI/API overrides)."""
@@ -123,17 +146,55 @@ class ExecutionEngine:
             lo, hi = GATE_LIMITS[key]
             self.x[key] = max(lo, min(hi, val))
         if patch:
-            ov = self._load_overrides()
-            ov.update({k: self.x[k] for k in patch})
-            try:
-                self._overrides_path().parent.mkdir(parents=True, exist_ok=True)
-                with open(self._overrides_path(), "w", encoding="utf-8") as f:
-                    json.dump(ov, f, indent=2)
-            except OSError as e:
-                debug(f"[execution] could not persist gate overrides: {e}")
+            self._save_overrides({k: self.x[k] for k in patch})
             debug("[execution] gates updated: " +
                   ", ".join(f"{k}={self.x[k]:g}" for k in patch))
         return self.gates()
+
+    def set_identity(self, magic: int = None, comment: str = None) -> dict:
+        """Runtime-adjust the bot's order identity: the magic number tagging
+        every bot order and the comment shown in MT5 (truncated to 31 chars,
+        MT5's display limit). Applies to NEW orders only — existing orders keep
+        their original tag, so a magic change orphans them from the engine's
+        point of view (see _warn_orphans). Persisted like the gates."""
+        changed = {}
+        if magic is not None:
+            m = int(magic)
+            if m < 1 or m > MAGIC_MAX:
+                raise ValueError("magic must be a positive integer")
+            old = self.magic
+            self.x["magic"] = m
+            self.magic = m          # cached attribute used by every filter
+            changed["magic"] = m
+            if old != m:
+                self._warn_orphans(old)
+        if comment is not None:
+            c = str(comment).strip()[:COMMENT_MAX]
+            self.x["comment"] = c or "ai-trader"
+            changed["comment"] = self.x["comment"]
+        if changed:
+            self._save_overrides(changed)
+            debug("[execution] identity updated: " +
+                  ", ".join(f"{k}={changed[k]}" for k in changed))
+        return {"magic": self.magic,
+                "comment": self.x.get("comment") or "ai-trader"}
+
+    def _warn_orphans(self, old_magic: int):
+        """Best-effort heads-up when the magic changes: orders tagged with the
+        previous magic are no longer visible to status/flatten — the engine
+        will never touch them again (they must be closed manually in MT5)."""
+        if not self.enabled:
+            return
+        try:
+            mt5 = self._connect()
+            n = (len(mt5_trader.bot_positions(mt5, old_magic))
+                 + len(mt5_trader.bot_pendings(mt5, old_magic)))
+            if n:
+                debug(f"[execution] WARNING: {n} order(s) tagged with the old "
+                      f"magic {old_magic} are now orphaned — the engine will "
+                      f"not manage or flatten them; close them manually in MT5")
+        except Exception:
+            pass  # MT5 unavailable — the warning is best-effort only
 
     # ---------------------------------------------------------- lifecycle
     def _connect(self):
@@ -458,6 +519,7 @@ class ExecutionEngine:
         """Dashboard/CLI status snapshot (safe when MT5 is unreachable)."""
         out = {
             "enabled": self.enabled, "dry_run": self.dry_run, "magic": self.magic,
+            "comment": self.x.get("comment") or "ai-trader",
             "entry_type": self.x.get("entry_type", "market"),
             "risk_percent": self._float("risk_percent", 1.0),
             "fixed_lot": self.x.get("fixed_lot"),

@@ -86,7 +86,7 @@ is the skip reason (shown on the Trade tab and in the engine summary):
 4. **Score / ML gates** — `final_score ≥ min_score` (default 70, stricter
    than the dashboard's 60) and `ml_prob ≥ min_ml_prob` (default 0.50).
    Both are adjustable live from the Trade tab or `POST /api/execution/params`
-   (see [Runtime gate overrides](#runtime-gate-overrides)) — no restart needed.
+   (see [Runtime overrides](#runtime-overrides)) — no restart needed.
 5. **Position caps** — `max_open_positions` total and `max_per_symbol` per
    symbol, counting bot positions **and** pending orders.
 6. **Daily cap** — `max_trades_per_day` filled/placed/dry-run executions since
@@ -169,7 +169,7 @@ setup behind it will have been superseded by newer analyses.
 |---|---|---|
 | `enabled` | `false` | master switch |
 | `dry_run` | `true` | record orders instead of sending |
-| `magic` | `862001` | bot order tag; change if you run two bots on one terminal |
+| `magic` | `862001` | bot order tag; change if you run two bots on one terminal (**runtime-adjustable**, new orders only) |
 | `entry_type` | `market` | `market` or `limit` |
 | `deviation` | `20` | max slippage for market orders (points) |
 | `risk_percent` | `1.0` | % of balance risked per trade (SL-distance sizing) |
@@ -186,13 +186,13 @@ setup behind it will have been superseded by newer analyses.
 | `trading_hours` | `null` | `"07-20"` broker-server hours window |
 | `pending_expiry_minutes` | `240` | engine cancels older pendings |
 | `poll_seconds` | `15` | scan interval |
-| `comment` | `ai-trader` | order comment visible in MT5 |
+| `comment` | `ai-trader` | order comment visible in MT5 (**runtime-adjustable**, max 31 chars) |
 
-> **Runtime gate overrides:** `min_score` / `min_ml_prob` set from the Trade
-> tab or `POST /api/execution/params` are stored in
-> `data/execution_overrides.json` and take precedence over the values in this
-> table (which are the static config.yaml baseline). Delete the overrides
-> file to fall back to config.
+> **Runtime overrides:** values set from the Trade tab or
+> `POST /api/execution/params` (`min_score`, `min_ml_prob`, `magic`,
+> `comment`) are stored in `data/execution_overrides.json` and take
+> precedence over the values in this table (which are the static config.yaml
+> baseline). Delete the overrides file to fall back to config.
 
 ## Using it
 
@@ -210,31 +210,46 @@ setup behind it will have been superseded by newer analyses.
    can walk them up without touching config or restarting. The Journal +
    Performance tabs show which verdict buckets actually pay.
 
-### Runtime gate overrides
+### Runtime overrides
 
-The two strictness gates — `min_score` and `min_ml_prob` — can be changed
-**while the engine is running**:
+Four execution parameters can be changed **while the engine is running** —
+the two strictness gates plus the bot's order identity:
+
+| Parameter | Range / validation | Effective |
+|---|---|---|
+| `min_score` | 0–100 | next engine scan |
+| `min_ml_prob` | 0–1 | next engine scan |
+| `magic` | positive integer | **new orders only** — see warning below |
+| `comment` | any text, truncated to 31 chars (MT5 display limit) | next order |
 
 | Surface | How |
 |---|---|
-| **Trade tab** | the *Execution gates* row (below the account strip): edit **min score** (0–100) and/or **min ML prob** (0–1), click **Apply** |
-| **HTTP API** | `POST /api/execution/params` with `{"min_score": 65}` and/or `{"min_ml_prob": 0.6}` |
-| **config.yaml** | `execution.min_score` / `execution.min_ml_prob` — the static baseline, read at engine start |
+| **Trade tab** | the *Gates* row (min score / min ML prob) and the *Order identity* row (magic / comment), each with an **Apply** button |
+| **HTTP API** | `POST /api/execution/params` with any of `{"min_score": 65, "min_ml_prob": 0.6, "magic": 424242, "comment": "my-bot"}` |
+| **config.yaml** | `execution.*` — the static baseline, read at engine start |
 
 Behavior:
 
-- New values take effect on the **next engine scan** (within `poll_seconds`).
 - API/UI changes are **persisted to `data/execution_overrides.json`** and
   re-applied on every engine start — so an adjustment survives restarts.
 - Overrides **beat config.yaml**; delete the overrides file (or set the value
   back) to return to the config baseline.
-- Values are clamped to valid ranges: score `[0, 100]`, ML prob `[0, 1]`.
+- Gate values are clamped to valid ranges; `magic ≤ 0` is rejected.
 - The live values are always visible: the Trade tab chips show the current
-  gates, and `trade --status` prints them (they come from `status()`, which
-  reads the live snapshot — including overrides).
-- These are the only execution parameters adjustable at runtime — caps,
-  cooldown, sizing, magic, entry type still require a restart (edit
-  `config.yaml`, then restart `serve.bat` / `trade --loop`).
+  magic/gates, and `trade --status` prints them (from `status()`, which reads
+  the live snapshot — including overrides).
+- ⚠️ **Changing the magic re-tags the bot.** Orders already placed under the
+  old magic are no longer recognized as the bot's own: they disappear from
+  the positions table and **Flatten will not close them** — close them
+  manually in MT5 first if that's not intended. The engine logs a warning
+  with the orphaned order count when this happens while connected. Typical
+  reason to change it: running two bots on one terminal (each needs its own
+  magic).
+- The `comment` change also only applies to new orders; existing orders keep
+  the comment they were placed with.
+- Everything else (caps, cooldown, sizing, entry type, enabled/dry_run
+  baseline) still requires a config edit + restart of `serve.bat` /
+  `trade --loop`.
 
 ### Dashboard — Trade tab
 
@@ -244,10 +259,12 @@ open bot positions & pendings with live P/L, the full trade log with skip
 reasons, and the controls: **Enable/Disable engine** (runtime toggle, not
 persisted), **Switch to LIVE orders / Back to DRY-RUN**, **Flatten all**
 (closes every bot position + cancels every bot pending in one click), and
-the **Execution gates** editor — *min score* and *min ML prob* inputs with an
-Apply button (persisted, see [Runtime gate overrides](#runtime-gate-overrides)).
-Gate inputs sync from the engine status on every refresh, but never fight you
-while you're typing. Deep-link: `http://127.0.0.1:8000/#trade`.
+two editor rows — **Gates** (*min score* / *min ML prob*) and **Order
+identity** (*magic* / *comment*), each with an Apply button (persisted, see
+[Runtime overrides](#runtime-overrides)). Editor inputs sync from the engine
+status on every refresh, but never fight you while you're typing; changing
+the magic asks for confirmation because it orphans existing bot orders.
+Deep-link: `http://127.0.0.1:8000/#trade`.
 
 ### CLI
 
@@ -270,7 +287,7 @@ the same `data/trader.db`.
 | `GET /api/execution/status` | engine config, account, positions, pendings, last scan |
 | `GET /api/execution/trades?limit=100` | trade log + aggregate stats |
 | `POST /api/execution/toggle` | `{"enabled": bool, "dry_run": bool?}` runtime switch |
-| `POST /api/execution/params` | `{"min_score": 0-100?, "min_ml_prob": 0-1?}` adjust gates at runtime (persisted) |
+| `POST /api/execution/params` | `{"min_score"?, "min_ml_prob"?, "magic"?, "comment"?}` adjust gates + order identity at runtime (persisted) |
 | `POST /api/execution/flatten` | close all bot positions + cancel pendings |
 
 ## Verification without a terminal

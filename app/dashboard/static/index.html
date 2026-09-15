@@ -505,7 +505,7 @@ footer{padding:6px 16px;font-size:11px;color:var(--muted);border-top:1px solid v
       </div>
       <div class="card"><div class="card-h"><span class="ic">⇅</span><h3>Bot Positions &amp; Pendings</h3><span class="sub" id="exPosSub"></span></div><div id="exPositions"><div class="empty">loading…</div></div></div>
       <div class="card"><div class="card-h"><span class="ic">▤</span><h3>Trade Log</h3><span class="sub" id="exLogSub"></span></div><div id="exTrades"><div class="empty">loading…</div></div></div>
-      <div class="hint">The engine sends MT5 orders when a setup's hybrid verdict is BUY/SELL and every safety gate passes (score, ML probability, position caps, cooldown, spread, trading hours). The score / ML gates are editable above — changes apply from the next scan and persist across restarts. DRY-RUN records orders without sending them. The bot only touches orders tagged with its magic number. Source: <span style="font-family:var(--mono)">/api/execution/*</span>.</div>
+      <div class="hint">The engine sends MT5 orders when a setup's hybrid verdict is BUY/SELL and every safety gate passes (score, ML probability, position caps, cooldown, spread, trading hours). Gates and the order identity (magic / comment) are editable above — changes apply from the next scan / next order and persist across restarts. A magic change only affects NEW orders. DRY-RUN records orders without sending them. The bot only touches orders tagged with its magic number. Source: <span style="font-family:var(--mono)">/api/execution/*</span>.</div>
     </div>
   </aside>
 </main>
@@ -1539,6 +1539,25 @@ async function saveGates(){
   loadTrade();
 }
 
+async function saveIdentity(){
+  const magic = parseInt($('gateMagic').value, 10);
+  const comment = ($('gateComment').value || '').trim();
+  if (!magic || magic < 1){ alert('magic must be a positive integer'); return; }
+  const cur = state.execution || {};
+  if (cur.magic && magic !== cur.magic &&
+      !confirm('Change the magic number?\n\nBot positions/pendings tagged with the old magic (' +
+               cur.magic + ') become invisible to the engine — Flatten and the positions table ' +
+               'will NOT show or manage them anymore. Close them manually in MT5 first if unintended.')) return;
+  try{
+    const r = await fetch('/api/execution/params', {method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({magic: magic, comment: comment || null})});
+    const j = await r.json();
+    if (!j.ok) alert(j.error || 'identity update failed');
+  }catch(e){ alert('identity update failed — server unreachable'); }
+  loadTrade();
+}
+
 function renderExecution(st){
   const on = !!st.enabled;
   const modeTxt = !on ? 'OFF' : (st.dry_run ? 'DRY-RUN' : 'LIVE');
@@ -1562,19 +1581,28 @@ function renderExecution(st){
   $('exAccount').innerHTML = acc
     ? `<div class="hint" style="margin-top:6px">#${acc.login} @ ${esc(acc.server||'')} · balance <b>${acc.balance}</b> ${esc(acc.currency||'')} · equity <b>${acc.equity}</b> · free margin <b>${acc.margin_free}</b>${acc.trade_allowed?'':' · <span style="color:var(--amber)">⚠ autotrading OFF in terminal</span>'}</div>`
       : (on ? '<div class="hint" style="margin-top:6px;color:var(--amber)">MT5 account unavailable'+(st.mt5_error?` — ${esc(st.mt5_error)}`:'')+'</div>' : '');
-  // gate editor: build once, then sync values unless the user is editing
+  // editors: build once, then sync values unless the user is editing
   if (!$('gateScore')) {
     $('exGates').innerHTML = `
       <div class="gate-row">
-        <span class="gate-lab">Execution gates</span>
+        <span class="gate-lab">Gates</span>
         <label>min score <input type="number" id="gateScore" min="0" max="100" step="1"></label>
         <label>min ML prob <input type="number" id="gateProb" min="0" max="1" step="0.01"></label>
         <button class="ex-btn" onclick="saveGates()">Apply</button>
-        <span class="gate-note">applies from the next scan · persisted to data/execution_overrides.json</span>
+        <span class="gate-note">next scan · persisted</span>
+      </div>
+      <div class="gate-row">
+        <span class="gate-lab">Order identity</span>
+        <label>magic <input type="number" id="gateMagic" min="1" step="1" style="width:92px"></label>
+        <label>comment <input type="text" id="gateComment" maxlength="31" style="width:110px"></label>
+        <button class="ex-btn" onclick="saveIdentity()">Apply</button>
+        <span class="gate-note">new orders only · ⚠ magic change orphans old bot orders</span>
       </div>`;
   }
-  if (document.activeElement !== $('gateScore')) $('gateScore').value = st.min_score ?? 70;
-  if (document.activeElement !== $('gateProb'))  $('gateProb').value  = st.min_ml_prob ?? 0.5;
+  if (document.activeElement !== $('gateScore'))  $('gateScore').value  = st.min_score ?? 70;
+  if (document.activeElement !== $('gateProb'))   $('gateProb').value   = st.min_ml_prob ?? 0.5;
+  if (document.activeElement !== $('gateMagic'))  $('gateMagic').value  = st.magic ?? 862001;
+  if (document.activeElement !== $('gateComment'))$('gateComment').value = st.comment ?? 'ai-trader';
   const rows = (st.positions||[]).concat((st.pendings||[]).map(p=>({...p, pending:true})));
   $('exPosSub').textContent = rows.length ? `${rows.length} open` : '';
   $('exPositions').innerHTML = rows.length ? `<table class="ex-tbl">

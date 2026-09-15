@@ -11,6 +11,7 @@ from app.execution.executor import ExecutionEngine, trade_identity
 tmp = tempfile.mkdtemp()
 cfg = load_config()
 cfg["storage"]["path"] = os.path.join(tmp, "test.db")
+cfg["_root"] = tmp   # isolate runtime overrides (data/execution_overrides.json)
 cfg["execution"].update({"enabled": True, "dry_run": True, "min_score": 70,
                          "min_ml_prob": 0.5, "fresh_seconds": 120})
 
@@ -128,5 +129,28 @@ s8 = engine2.scan_once()
 assert s8["actions"] and s8["actions"][0]["status"] == "filled", s8
 assert s8["actions"][0]["price"] == 1.0839   # short fills at bid
 print("pass 8 (short live):", s8["actions"][0]["status"], "price", s8["actions"][0]["price"])
+
+# 9) runtime-adjustable parameters: gates + order identity (persisted)
+cfg9 = dict(cfg); cfg9["execution"] = dict(cfg["execution"], enabled=False)
+eng9 = ExecutionEngine(cfg9, store2, allowed_symbols={"EURUSD"}, verbose=False)
+g9 = eng9.set_gates(min_score=55.0, min_ml_prob=0.6)
+assert g9 == {"min_score": 55.0, "min_ml_prob": 0.6}, g9
+ident = eng9.set_identity(magic=424242, comment="test-bot")
+assert ident == {"magic": 424242, "comment": "test-bot"}, ident
+assert eng9.magic == 424242
+try:
+    eng9.set_identity(magic=0)
+    raise AssertionError("magic=0 was accepted")
+except ValueError:
+    pass
+ident2 = eng9.set_identity(comment="x" * 50)
+assert ident2["comment"] == "x" * 31, ident2          # MT5 comment display limit
+ov = json.load(open(os.path.join(tmp, "data", "execution_overrides.json")))
+assert ov["min_score"] == 55.0 and ov["magic"] == 424242 \
+       and ov["comment"] == "x" * 31, ov
+eng9b = ExecutionEngine(cfg9, store2, allowed_symbols={"EURUSD"}, verbose=False)
+assert eng9b.magic == 424242, eng9b.magic
+assert eng9b.gates() == {"min_score": 55.0, "min_ml_prob": 0.6}, eng9b.gates()
+print("pass 9 (runtime params):", g9, ident)
 
 print("\nALL SMOKE TESTS PASSED")
