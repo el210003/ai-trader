@@ -162,6 +162,28 @@ aside::-webkit-scrollbar-thumb{background:var(--border2);border-radius:4px}
 .tab .cnt{font-family:var(--mono);font-size:10px;color:var(--dim);margin-left:4px}
 .tab.active .cnt{color:var(--accent)}
 
+/* ---------- execution tab ---------- */
+.ex-btn{font-size:11px;font-weight:600;padding:5px 12px;border-radius:7px;border:1px solid var(--border2);background:var(--panel3);color:var(--text);cursor:pointer;transition:.15s}
+.ex-btn:hover{border-color:var(--accent)}
+.ex-btn.danger{border-color:rgba(242,95,92,.4);color:var(--red)}
+.ex-btn.danger:hover{background:var(--red-dim)}
+.ex-btn.on{border-color:rgba(45,212,167,.4);color:var(--green)}
+.ex-tbl{width:100%;border-collapse:collapse;font-size:11px;font-family:var(--mono)}
+.ex-tbl th{text-align:left;color:var(--dim);font-size:9.5px;font-weight:600;letter-spacing:.8px;text-transform:uppercase;padding:4px 6px;border-bottom:1px solid var(--border)}
+.ex-tbl td{padding:4.5px 6px;border-bottom:1px dashed rgba(255,255,255,.04);color:var(--text)}
+.ex-tbl tr:last-child td{border-bottom:none}
+.ex-chip{display:inline-flex;align-items:center;gap:4px;font-size:10px;font-family:var(--mono);padding:2px 8px;border-radius:10px;border:1px solid var(--border2)}
+.ex-status{padding:1px 7px;border-radius:9px;font-size:9.5px;font-weight:700;letter-spacing:.5px}
+.ex-status.filled,.ex-status.placed{background:var(--green-dim);color:var(--green)}
+.ex-status.dry_run{background:var(--amber-dim);color:var(--amber)}
+.ex-status.rejected,.ex-status.error{background:var(--red-dim);color:var(--red)}
+.gate-row{display:flex;align-items:center;gap:10px;margin-top:10px;padding-top:9px;border-top:1px dashed var(--border);flex-wrap:wrap;font-size:11px;color:var(--muted)}
+.gate-row label{display:inline-flex;align-items:center;gap:6px;cursor:pointer}
+.gate-row input{width:74px;background:var(--panel2);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:4px 8px;font-size:11.5px;font-family:var(--mono);outline:none}
+.gate-row input:focus{border-color:var(--accent)}
+.gate-lab{font-size:9.5px;font-weight:700;letter-spacing:.8px;text-transform:uppercase;color:var(--dim)}
+.gate-note{font-size:10px;color:var(--dim)}
+
 .pad{padding:4px 14px 16px}
 
 .card{background:linear-gradient(180deg,var(--panel2),var(--panel));border:1px solid var(--border);border-radius:14px;padding:14px;margin-bottom:12px;box-shadow:var(--shadow);position:relative;overflow:hidden}
@@ -436,6 +458,7 @@ footer{padding:6px 16px;font-size:11px;color:var(--muted);border-top:1px solid v
         <div class="tab" id="tabRanked" onclick="showTab('ranked')">Ranked<span class="cnt" id="cntRanked">0</span></div>
         <div class="tab" id="tabJournal" onclick="showTab('journal')">Journal<span class="cnt" id="cntJournal">0</span></div>
         <div class="tab" id="tabPerf" onclick="showTab('perf')">Perf</div>
+        <div class="tab" id="tabTrade" onclick="showTab('trade')">Trade</div>
       </div>
     </div>
 
@@ -470,6 +493,19 @@ footer{padding:6px 16px;font-size:11px;color:var(--muted);border-top:1px solid v
       <div class="card"><div class="card-h"><span class="ic">⚡</span><h3>Insights &amp; Recommendations</h3><span class="sub" id="insightsSub">auto-diagnosis from resolved outcomes</span></div><div id="insightRows"><div class="empty">loading…</div></div></div>
       <div class="card"><div class="card-h"><span class="ic">∿</span><h3>Feature Discrimination</h3><span class="sub">tercile win-rate spread per ML feature</span></div><div id="featReport"><div class="empty">loading…</div></div></div>
       <div class="hint">R = realized multiple of the setup's planned risk. Expectancy = average R per resolved setup. WAIT/AVOID rows are resolved too — they validate the threshold. Source: <span style="font-family:var(--mono)">/api/outcomes/stats</span>.</div>
+    </div>
+
+    <div id="viewTrade" class="pad" style="display:none">
+      <div class="card">
+        <div class="card-h"><span class="ic">⟜</span><h3>Live Execution · MT5</h3><span class="sub" id="exMode">…</span></div>
+        <div id="exControls" class="rank-summary"></div>
+        <div id="exScan"></div>
+        <div id="exAccount"></div>
+        <div id="exGates"></div>
+      </div>
+      <div class="card"><div class="card-h"><span class="ic">⇅</span><h3>Bot Positions &amp; Pendings</h3><span class="sub" id="exPosSub"></span></div><div id="exPositions"><div class="empty">loading…</div></div></div>
+      <div class="card"><div class="card-h"><span class="ic">▤</span><h3>Trade Log</h3><span class="sub" id="exLogSub"></span></div><div id="exTrades"><div class="empty">loading…</div></div></div>
+      <div class="hint">The engine sends MT5 orders when a setup's hybrid verdict is BUY/SELL and every safety gate passes (score, ML probability, position caps, cooldown, spread, trading hours). The score / ML gates are editable above — changes apply from the next scan and persist across restarts. DRY-RUN records orders without sending them. The bot only touches orders tagged with its magic number. Source: <span style="font-family:var(--mono)">/api/execution/*</span>.</div>
     </div>
   </aside>
 </main>
@@ -1090,13 +1126,16 @@ function showTab(which){
   $('viewRanked').style.display = which==='ranked' ? '' : 'none';
   $('viewJournal').style.display = which==='journal' ? '' : 'none';
   $('viewPerf').style.display = which==='perf' ? '' : 'none';
+  $('viewTrade').style.display = which==='trade' ? '' : 'none';
   $('tabSetups').classList.toggle('active', which==='setups');
   $('tabRanked').classList.toggle('active', which==='ranked');
   $('tabJournal').classList.toggle('active', which==='journal');
   $('tabPerf').classList.toggle('active', which==='perf');
+  $('tabTrade').classList.toggle('active', which==='trade');
   if (which==='journal') loadJournal();
   if (which==='ranked') loadRanked();
   if (which==='perf') loadPerf();
+  if (which==='trade') { loadTrade(); startTradePoll(); } else stopTradePoll();
 }
 
 /* ------------------------------------------------- thin CSM strip */
@@ -1435,7 +1474,147 @@ function setupAuto(){
 }
 $('autoRefresh').onchange = setupAuto;
 
-/* ---------------------------------------------------------------- boot */
+/* -------------------------------------------------- live execution tab */
+let exTimer = null;
+function startTradePoll(){ stopTradePoll(); exTimer = setInterval(loadTrade, 10000); }
+function stopTradePoll(){ if (exTimer){ clearInterval(exTimer); exTimer = null; } }
+
+async function loadTrade(){
+  try{
+    const r = await fetch('/api/execution/status');
+    state.execution = await r.json();
+    renderExecution(state.execution);
+  }catch(e){
+    $('exControls').innerHTML = '<div class="empty">execution status unavailable</div>';
+  }
+  try{
+    const r2 = await fetch('/api/execution/trades?limit=60');
+    renderTrades(await r2.json());
+  }catch(e){ $('exTrades').innerHTML = '<div class="empty">trade log unavailable</div>'; }
+}
+
+async function toggleExecution(){
+  const cur = state.execution || {};
+  const enabling = !cur.enabled;
+  if (enabling && cur.dry_run === false &&
+      !confirm('Enable LIVE order execution? Real orders will be sent to MT5.')) return;
+  try{
+    await fetch('/api/execution/toggle', {method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({enabled: enabling})});
+  }catch(e){}
+  loadTrade();
+}
+
+async function toggleDryRun(){
+  const cur = state.execution || {};
+  if (cur.dry_run &&
+      !confirm('Switch to LIVE orders? Real money trades will be placed via MT5.')) return;
+  try{
+    await fetch('/api/execution/toggle', {method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({enabled: cur.enabled, dry_run: !cur.dry_run})});
+  }catch(e){}
+  loadTrade();
+}
+
+async function flattenAll(){
+  if (!confirm('Close ALL bot positions and cancel ALL bot pending orders?')) return;
+  try{ await fetch('/api/execution/flatten', {method:'POST'}); }catch(e){}
+  loadTrade();
+}
+
+async function saveGates(){
+  const score = parseFloat($('gateScore').value);
+  const prob  = parseFloat($('gateProb').value);
+  if (isNaN(score) || score < 0 || score > 100){ alert('min score must be between 0 and 100'); return; }
+  if (isNaN(prob)  || prob  < 0 || prob  > 1)  { alert('min ML prob must be between 0 and 1');   return; }
+  try{
+    const r = await fetch('/api/execution/params', {method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({min_score: score, min_ml_prob: prob})});
+    const j = await r.json();
+    if (!j.ok) alert(j.error || 'gate update failed');
+  }catch(e){ alert('gate update failed — server unreachable'); }
+  loadTrade();
+}
+
+function renderExecution(st){
+  const on = !!st.enabled;
+  const modeTxt = !on ? 'OFF' : (st.dry_run ? 'DRY-RUN' : 'LIVE');
+  const modeColor = !on ? 'var(--muted)' : (st.dry_run ? 'var(--amber)' : 'var(--green)');
+  $('exMode').innerHTML = `<span style="color:${modeColor};font-weight:700">${modeTxt}</span>`;
+  $('exControls').innerHTML = `
+    <span class="sum-chip"><button class="ex-btn ${on?'on':''}" onclick="toggleExecution()">${on?'⏸ Disable':'▶ Enable'} engine</button></span>
+    <span class="sum-chip"><button class="ex-btn ${on&&!st.dry_run?'danger':''}" onclick="toggleDryRun()">${st.dry_run?'Switch to LIVE orders':'Back to DRY-RUN'}</button></span>
+    <span class="sum-chip"><button class="ex-btn danger" onclick="flattenAll()">✕ Flatten all</button></span>
+    <span class="sum-chip">magic <b>${st.magic??'—'}</b></span>
+    <span class="sum-chip">entry <b>${esc(st.entry_type||'market')}</b></span>
+    <span class="sum-chip">risk <b>${st.risk_percent??'—'}%</b>${st.fixed_lot?` · fixed lot <b>${st.fixed_lot}</b>`:''}</span>
+    <span class="sum-chip">min score <b>${st.min_score??'—'}</b></span>
+    <span class="sum-chip">min ML <b>${st.min_ml_prob!=null?Math.round(st.min_ml_prob*100)+'%':'—'}</b></span>
+    <span class="sum-chip">today <b>${st.trades_today??0}</b>/${st.max_trades_per_day??'—'} trades</span>`;
+  const scan = st.state && st.state.last_scan;
+  $('exScan').innerHTML = scan
+    ? `<div class="hint" style="margin-top:8px">last scan: considered <b>${scan.considered}</b> setup(s), ${scan.actions} action(s)${Object.keys(scan.skipped||{}).length?` · skipped: ${Object.entries(scan.skipped).map(([k,v])=>`${esc(k)} ×${v}`).join(', ')}`:''}${st.last_error?` · <span style="color:var(--red)">error: ${esc(st.last_error)}</span>`:''}</div>`
+      : '';
+  const acc = st.account;
+  $('exAccount').innerHTML = acc
+    ? `<div class="hint" style="margin-top:6px">#${acc.login} @ ${esc(acc.server||'')} · balance <b>${acc.balance}</b> ${esc(acc.currency||'')} · equity <b>${acc.equity}</b> · free margin <b>${acc.margin_free}</b>${acc.trade_allowed?'':' · <span style="color:var(--amber)">⚠ autotrading OFF in terminal</span>'}</div>`
+      : (on ? '<div class="hint" style="margin-top:6px;color:var(--amber)">MT5 account unavailable'+(st.mt5_error?` — ${esc(st.mt5_error)}`:'')+'</div>' : '');
+  // gate editor: build once, then sync values unless the user is editing
+  if (!$('gateScore')) {
+    $('exGates').innerHTML = `
+      <div class="gate-row">
+        <span class="gate-lab">Execution gates</span>
+        <label>min score <input type="number" id="gateScore" min="0" max="100" step="1"></label>
+        <label>min ML prob <input type="number" id="gateProb" min="0" max="1" step="0.01"></label>
+        <button class="ex-btn" onclick="saveGates()">Apply</button>
+        <span class="gate-note">applies from the next scan · persisted to data/execution_overrides.json</span>
+      </div>`;
+  }
+  if (document.activeElement !== $('gateScore')) $('gateScore').value = st.min_score ?? 70;
+  if (document.activeElement !== $('gateProb'))  $('gateProb').value  = st.min_ml_prob ?? 0.5;
+  const rows = (st.positions||[]).concat((st.pendings||[]).map(p=>({...p, pending:true})));
+  $('exPosSub').textContent = rows.length ? `${rows.length} open` : '';
+  $('exPositions').innerHTML = rows.length ? `<table class="ex-tbl">
+    <tr><th>ticket</th><th>symbol</th><th>side</th><th>lot</th><th>open</th><th>sl</th><th>tp</th><th>p/l</th></tr>
+    ${rows.map(p=>`<tr>
+      <td>#${p.ticket}${p.pending?' <span class="ex-chip">pending</span>':''}</td>
+      <td>${esc(p.symbol)}</td>
+      <td style="color:${p.type==='long'||p.type==='buy'?'var(--green)':p.type==='short'||p.type==='sell'?'var(--red)':'inherit'}">${esc(p.type)}</td>
+      <td>${p.volume}</td><td>${fp(p.price_open)}</td>
+      <td>${p.sl?fp(p.sl):'—'}</td><td>${p.tp?fp(p.tp):'—'}</td>
+      <td style="color:${p.profit>=0?'var(--green)':'var(--red)'}">${p.profit!=null&&p.profit!==undefined?p.profit.toFixed(2):'—'}</td>
+    </tr>`).join('')}</table>`
+    : '<div class="empty">no open bot positions</div>';
+}
+
+function renderTrades(j){
+  const rows = j.rows || [];
+  const s = j.stats || {};
+  $('exLogSub').textContent = `${s.total||0} logged · ${s.filled||0} live · ${s.dry_run||0} dry-run · ${s.rejected||0} rejected`;
+  $('exTrades').innerHTML = rows.length ? `<table class="ex-tbl">
+    <tr><th>time</th><th>status</th><th>symbol</th><th>dir</th><th>verdict</th><th>score</th><th>lot</th><th>price</th><th>sl</th><th>tp</th><th>note</th></tr>
+    ${rows.map(t=>{
+      const when = t.placed_at ? new Date(t.placed_at*1000).toLocaleString([], {month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'}) : '—';
+      return `<tr>
+        <td>${esc(when)}</td>
+        <td><span class="ex-status ${esc(t.status||'')}">${esc((t.status||'—').replace('_','-'))}</span></td>
+        <td>${esc(t.symbol)}</td>
+        <td style="color:${t.direction==='long'?'var(--green)':'var(--red)'}">${esc((t.direction||'—').toUpperCase())}</td>
+        <td>${esc(t.verdict||'—')}</td>
+        <td>${t.score!=null?Math.round(t.score):'—'}</td>
+        <td>${t.lot??'—'}</td>
+        <td>${t.fill_price||t.requested_price?fp(t.fill_price||t.requested_price):'—'}</td>
+        <td>${t.stop_loss?fp(t.stop_loss):'—'}</td>
+        <td>${t.take_profit?fp(t.take_profit):'—'}</td>
+        <td style="color:var(--muted)">${esc((t.reason||'').slice(0,42))}</td>
+      </tr>`;}).join('')}</table>`
+    : '<div class="empty">No orders yet — the engine logs every attempt here (dry-run orders too).</div>';
+}
+
+/* -------------------------------------------------- boot */
 (async function(){
   initChart();
   try{ await loadMeta(); }catch(e){ setStatus('err','server unreachable'); return; }
@@ -1443,9 +1622,10 @@ $('autoRefresh').onchange = setupAuto;
   await loadMtfStatus();
   await loadCsm();
   setupAuto();
-  // deep-link tabs: #ranked / #journal
+  // deep-link tabs: #ranked / #journal / #trade
   if (location.hash === '#ranked') showTab('ranked');
   else if (location.hash === '#journal') showTab('journal');
+  else if (location.hash === '#trade') showTab('trade');
 })();
 </script>
 </body>

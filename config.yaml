@@ -129,6 +129,7 @@ csm:
 
 # Multi-timeframe confluence: higher timeframes (H1/H4 for M15 entries) are
 # projected into every setup as bias/zone/PD/liquidity confluence + ML features.
+# NOTE: the execution engine only trades setups on `mtf.entry_tf` (below).
 mtf:
   enabled: true
   require_htf_bias: false   # true = drop M15 setups whose nearest HTF (H1) trend opposes
@@ -145,6 +146,42 @@ mtf:
 outcomes:
   enabled: true             # reserved flag (resolution is cheap & idempotent)
   lookback_days: 30         # only resolve setups formed within this window
+
+# ============================================================
+# LIVE EXECUTION — place MT5 orders when a setup qualifies
+# ============================================================
+# The engine scans fresh analyses for setups whose hybrid verdict is BUY or
+# SELL and sends the matching order with the setup's SL/TP attached.
+#
+# SAFETY: it starts OFF and in DRY-RUN. Recommended rollout:
+#   1. dry_run: true, enabled: true   -> watch the Trade tab log orders
+#   2. dry_run: false                 -> LIVE, tiny risk_percent first
+# Every attempt is logged to the `trades` table + dashboard Trade tab.
+# The bot only ever touches orders tagged with its `magic` number.
+execution:
+  enabled: false             # master switch (or toggle live from the Trade tab)
+  dry_run: true              # true = log what WOULD be sent, no orders go out
+  magic: 862001              # unique id tagging every bot order (change if you run two bots)
+  entry_type: market         # market = instant fill at ask/bid
+                             # limit = pending order parked at the setup's zone entry
+                             #        (auto-fallback to market when the zone is at price)
+  deviation: 20              # max slippage for market orders, in points
+  risk_percent: 1.0          # % of balance risked per trade, sized from the SL distance
+  fixed_lot: null            # set e.g. 0.10 to bypass risk-percent sizing
+  allow_min_lot: false       # false = skip when the sized lot is below the broker minimum
+  min_score: 70              # hybrid final score required (dashboard threshold is 60)
+  min_ml_prob: 0.50          # ML win probability required (setup skipped below this)
+  max_open_positions: 3      # total open bot positions + pending orders
+  max_per_symbol: 1          # open bot positions + pendings per symbol
+  max_trades_per_day: 5      # daily cap (resets at local midnight)
+  cooldown_minutes: 240      # after a trade, this symbol+direction is paused
+  fresh_seconds: 120         # only setups from analyses newer than this are considered
+                             # (keeps a restart from firing stale setups)
+  max_spread_points: 40      # skip when ask-bid spread is wider than this (points)
+  trading_hours: null        # "07-20" = trade only in that broker-server hour window
+  pending_expiry_minutes: 240 # limit orders older than this are canceled by the engine
+  poll_seconds: 15           # how often the execution engine scans for fresh setups
+  comment: ai-trader         # order comment visible in MT5
 
 dashboard:
   debug: true               # verbose console output — shows exactly what each

@@ -224,6 +224,90 @@ def cmd_select_symbols(cfg, args):
             print(f"no explicit selection -> all {len(syms)} symbols enabled")
 
 
+def cmd_trade(cfg, args):
+    """Live MT5 execution engine.
+
+    --status        print account, open bot positions and the trade log
+    --flatten       close every bot position + cancel every bot pending
+    --once          run a single execution pass over fresh analyses
+    --loop N        scan every N seconds (default from execution.poll_seconds)
+    --dry-run       force dry-run regardless of config.yaml
+    """
+    from .execution.executor import ExecutionEngine
+    store = Store(cfg["storage"]["path"])
+    syms = _symbols_for(cfg, args, mt5=None)
+    dry_override = True if getattr(args, "dry_run", False) else None
+    engine = ExecutionEngine(cfg, store, allowed_symbols=syms,
+                             verbose=True, dry_run_override=dry_override)
+
+    if getattr(args, "flatten", False):
+        res = engine.flatten()
+        print(f"flatten: closed {len(res['closed'])} position(s), "
+              f"canceled {len(res['canceled'])} pending order(s)" +
+              (f", ERRORS: {res['errors']}" if res["errors"] else ""))
+        return
+
+    if getattr(args, "status", False):
+        st = engine.status()
+        mode = "DRY-RUN" if st["dry_run"] else "LIVE"
+        print(f"execution: {'ON' if st['enabled'] else 'OFF'} ({mode}) | "
+              f"magic {st['magic']} | entry {st['entry_type']} | "
+              f"risk {st['risk_percent']}% | min_score {st['min_score']} | "
+              f"min_ml {st['min_ml_prob']}")
+        acc = st.get("account")
+        if acc:
+            print(f"account: #{acc['login']} @ {acc['server']} | "
+                  f"balance {acc['balance']} {acc['currency']} | "
+                  f"equity {acc['equity']} | free margin {acc['margin_free']}")
+        elif st.get("mt5_error"):
+            print(f"account: unavailable ({st['mt5_error']})")
+        for p in st.get("positions", []):
+            print(f"  position #{p['ticket']} {p['symbol']} {p['type']} "
+                  f"{p['volume']} @ {p['price_open']} sl {p['sl']} tp {p['tp']} "
+                  f"p/l {p['profit']}")
+        for o in st.get("pendings", []):
+            print(f"  pending  #{o['ticket']} {o['symbol']} {o['type']} "
+                  f"{o['volume']} @ {o['price_open']} sl {o['sl']} tp {o['tp']}")
+        trades = store.load_trades(limit=int(args.limit))
+        if trades:
+            print(f"\nrecent trades ({len(trades)}):")
+            for t in trades:
+                when = time.strftime('%m-%d %H:%M', time.localtime(t['placed_at'] or 0))
+                print(f"  {when} {t['status']:<9} {t['symbol']:<8} "
+                      f"{(t['direction'] or '-'):<5} {t['verdict'] or '-':<5} "
+                      f"lot {t['lot']} @ {t['fill_price'] or t['requested_price'] or '-'} "
+                      f"{(t['reason'] or '')[:48]}")
+        else:
+            print("\nno trades logged yet")
+        return
+
+    if not engine.enabled and not dry_override:
+        print("execution.enabled is false in config.yaml -- nothing to do.\n"
+              "  (enable it there, or toggle from the dashboard Trade tab,\n"
+              "   or use --dry-run to rehearse without config changes)")
+        return
+    mode = "DRY-RUN (no real orders)" if engine.dry_run else "LIVE"
+    print(f"execution engine: {mode} | magic {engine.magic} | "
+          f"symbols {len(syms)} | entry_tf {engine.entry_tf or 'all'}")
+    if getattr(args, "once", False):
+        summary = engine.scan_once()
+        print(f"scan: considered {summary['considered']} setup(s), "
+              f"{len(summary['actions'])} action(s), "
+              f"skipped: {summary['skipped'] or 'none'}")
+        for a in summary["actions"]:
+            print(f"  {a['status'].upper()} {a['symbol']} {a['direction']} "
+                  f"lot {a.get('lot')} {a.get('reason') or ''}")
+        return
+
+    poll = int(getattr(args, "loop", 0) or 0) or int(cfg["execution"].get("poll_seconds", 15))
+    print(f"scanning every {poll}s -- Ctrl+C to stop")
+    try:
+        engine.run_forever(poll_seconds=poll)
+    except KeyboardInterrupt:
+        engine.stop()
+        print("stopped")
+
+
 def cmd_test_llm(cfg, args):
     """Ping the configured LLM endpoint with a tiny prompt and report status."""
     llm = LLMAnalyzer(cfg["ai"]["llm"])
@@ -355,7 +439,7 @@ def main():
     p.add_argument("command", choices=["ingest", "analyze", "train", "serve",
                                        "run", "list-symbols", "select-symbols",
                                        "history", "outcomes", "insights",
-                                       "migrate-journal", "test-llm"])
+                                       "migrate-journal", "test-llm", "trade"])
     p.add_argument("--demo", action="store_true", help="use synthetic data instead of MT5")
     p.add_argument("--all-symbols", action="store_true",
                    help="override config.yaml symbols with symbols discovered from MT5")
@@ -381,6 +465,16 @@ def main():
                    help="(serve) auto-run the full pipeline every N seconds (0 = off)")
     p.add_argument("--on-bar-close", action="store_true",
                    help="(serve) analyze each pair when its bar closes (recommended)")
+    # trade options
+    p.add_argument("--once", action="store_true", help="(trade) run a single execution pass")
+    p.add_argument("--loop", type=int, default=0,
+                   help="(trade) scan every N seconds (default execution.poll_seconds)")
+    p.add_argument("--status", action="store_true",
+                   help="(trade) print account, bot positions and trade log")
+    p.add_argument("--flatten", action="store_true",
+                   help="(trade) close all bot positions + cancel bot pendings")
+    p.add_argument("--dry-run", action="store_true",
+                   help="(trade) force dry-run regardless of config.yaml")
     args = p.parse_args()
 
     cfg = load_config(args.config)
@@ -394,6 +488,7 @@ def main():
         "insights": cmd_insights,
         "migrate-journal": _cmd_migrate_journal,
         "test-llm": cmd_test_llm,
+        "trade": cmd_trade,
     }
     handlers[args.command](cfg, args)
 

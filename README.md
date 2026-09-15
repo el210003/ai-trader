@@ -36,6 +36,7 @@ serve.bat         :: open http://127.0.0.1:8000
 
 outcomes.bat      :: resolve pending setups + print performance summary
 insights.bat      :: auto-diagnosis + feature-importance report
+trade.bat         :: live MT5 execution engine (OFF + dry-run by default)
 check_env.bat     :: verify deps + model/env consistency
 ```
 
@@ -70,6 +71,37 @@ which timeframe generates setups; H1/H4 are context.
    python -m app.main analyze
    python -m app.main serve         # or: python -m app.main run --interval 60
    ```
+
+## Live execution (auto-trading on qualifying setups)
+
+The app can **place real MT5 orders** when a setup's hybrid verdict is
+BUY/SELL: the engine scans fresh analyses every 15s, applies safety gates
+(score ≥ 70, ML prob ≥ 0.50, position caps, cooldown, spread cap, optional
+trading hours), sizes the lot to `risk_percent` of balance using the setup's
+stop distance, and sends a market or limit order **with the setup's SL/TP
+attached**. It only ever touches orders tagged with its own `magic` number.
+
+It ships **OFF + DRY-RUN**. Safe rollout:
+
+```bat
+:: 1. rehearse: orders are logged, not sent — watch the Trade tab
+ingest.bat && train.bat && analyze.bat
+::    set execution.enabled: true (dry_run stays true), then:
+serve.bat            :: Trade tab shows every would-be order with lot/price/SL/TP
+
+:: 2. go live small: flip dry_run off (Trade tab button or config.yaml),
+::    lower execution.risk_percent to 0.25-0.5
+
+:: 3. manage: runtime toggle / flatten / trade log live on the Trade tab
+::    (min score / min ML prob gates are editable there too — persisted)
+python -m app.main trade --status
+python -m app.main trade --flatten
+```
+
+Full gate list, sizing math, entry types (market vs limit), failure modes and
+the recommended validation workflow: [`docs/execution.md`](docs/execution.md).
+**Validate with the setups journal first** — auto-trading an unvalidated
+engine is gambling, not trading.
 
 ## The SMC engine (`app/smc/`)
 
@@ -175,6 +207,7 @@ Config: `csm:` section (`lookback`, `ma_length`, `ma_type`, `display: MA|ROC`,
 | `run --interval 60` | Continuous ingest + analyze loop |
 | `history [--symbol X] [--tf X] [--limit N]` | Print the journaled setups (forward-validation data) |
 | `outcomes` | Resolve pending setups + print win rate / expectancy / calibration summary |
+| `trade [--once] [--loop N] [--status] [--flatten] [--dry-run]` | Live MT5 execution engine (scan / inspect / panic-close) |
 | `insights` | Auto-diagnosis (SL/TP/threshold/regime findings) + per-feature report |
 | `migrate-journal` | Collapse duplicate journal rows into one per real setup (backs up first) |
 | `list-symbols [--all-symbols]` | Print the symbol list the app will use |
@@ -301,6 +334,9 @@ the environment you serve with.
 - [`docs/symbol-management.md`](docs/symbol-management.md) — how symbol lists
   are resolved (config / discovery / cache), per-symbol enable/disable selection,
   the dashboard filter and settings modal, and CLI for batch selection.
+- [`docs/execution.md`](docs/execution.md) — live MT5 auto-trading: safety
+  model, the ordered gate pipeline, risk-percent sizing, market vs limit
+  entries, the `trades` log, dashboard Trade tab, CLI, and failure modes.
 - [`docs/validation-guide.md`](docs/validation-guide.md) — staged validation
   workflow for real MT5 data: environment sanity, data quality, metric
   thresholds, per-symbol-feature ablation, dashboard checks, and forward

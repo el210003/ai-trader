@@ -67,8 +67,40 @@ class Store:
                 mae_r       REAL,
                 bars_to_outcome INTEGER
             );
+            CREATE TABLE IF NOT EXISTS trades(
+                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                identity        TEXT,
+                symbol          TEXT NOT NULL,
+                tf              TEXT,
+                direction       TEXT,
+                verdict         TEXT,
+                score           REAL,
+                ml_prob         REAL,
+                entry           REAL,
+                stop_loss       REAL,
+                take_profit     REAL,
+                rr              REAL,
+                order_type      TEXT,
+                lot             REAL,
+                requested_price REAL,
+                fill_price      REAL,
+                ticket          INTEGER,
+                deal            INTEGER,
+                retcode         INTEGER,
+                status          TEXT,
+                reason          TEXT,
+                placed_at       INTEGER,
+                payload         TEXT
+            );
             """
         )
+        # execution log indexes
+        try:
+            self.conn.execute("CREATE INDEX IF NOT EXISTS idx_trades_identity ON trades(identity)")
+            self.conn.execute("CREATE INDEX IF NOT EXISTS idx_trades_time ON trades(placed_at)")
+            self.conn.commit()
+        except Exception:
+            pass
         # migration: post_loss_tp_hit added in the outcome-driven improvement
         try:
             self.conn.execute("ALTER TABLE outcomes ADD COLUMN post_loss_tp_hit INTEGER")
@@ -322,6 +354,82 @@ class Store:
             "ORDER BY h.formed_at ASC LIMIT ?", (symbol, int(limit)))
         return [{"formed_at": r[0], "result": r[1], "r_multiple": r[2]}
                 for r in cur.fetchall()]
+
+    # ---------------------------------------------------------- trade log
+    def record_trade(self, t: dict):
+        """Append one execution attempt to the trades log."""
+        self.conn.execute(
+            "INSERT INTO trades(identity,symbol,tf,direction,verdict,score,ml_prob,"
+            "entry,stop_loss,take_profit,rr,order_type,lot,requested_price,fill_price,"
+            "ticket,deal,retcode,status,reason,placed_at,payload) "
+            "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (t.get("identity"), t.get("symbol"), t.get("tf"), t.get("direction"),
+             t.get("verdict"), t.get("score"), t.get("ml_prob"), t.get("entry"),
+             t.get("stop_loss"), t.get("take_profit"), t.get("rr"),
+             t.get("order_type"), t.get("lot"), t.get("requested_price"),
+             t.get("fill_price"), t.get("ticket"), t.get("deal"),
+             t.get("retcode"), t.get("status"), t.get("reason"),
+             int(t.get("placed_at") or 0), t.get("payload")))
+        self.conn.commit()
+
+    def trade_attempted(self, identity: str) -> bool:
+        """True when this setup identity was already executed/attempted at
+        least once (dry-run, live, or rejected). Transient skips are never
+        recorded, so they don't block a later successful pass."""
+        cur = self.conn.execute(
+            "SELECT 1 FROM trades WHERE identity=? AND status IN "
+            "('filled','placed','dry_run','rejected','error') LIMIT 1", (identity,))
+        return cur.fetchone() is not None
+
+    def last_trade_time(self, symbol: str, direction: str = None,
+                        statuses=('filled', 'placed', 'dry_run')):
+        """Most recent execution time for a symbol (+direction), or None."""
+        q = ("SELECT MAX(placed_at) FROM trades WHERE symbol=? AND status IN "
+             "(%s)" % ",".join("?" * len(statuses)))
+        params = [symbol, *statuses]
+        if direction:
+            q += " AND direction=?"
+            params.append(direction)
+        cur = self.conn.execute(q, params)
+        row = cur.fetchone()
+        return row[0] if row and row[0] else None
+
+    def trades_today(self, statuses=('filled', 'placed', 'dry_run')) -> int:
+        """Count executions since local midnight (daily cap check)."""
+        import time as _t
+        lt = _t.localtime()
+        midnight = int(_t.mktime((lt.tm_year, lt.tm_mon, lt.tm_mday, 0, 0, 0, 0, 0, -1)))
+        q = ("SELECT COUNT(*) FROM trades WHERE placed_at >= ? AND status IN "
+             "(%s)" % ",".join("?" * len(statuses)))
+        cur = self.conn.execute(q, (midnight, *statuses))
+        return cur.fetchone()[0]
+
+    def load_trades(self, limit: int = 100, symbol: str = None) -> list:
+        q = ("SELECT id,identity,symbol,tf,direction,verdict,score,ml_prob,entry,"
+             "stop_loss,take_profit,rr,order_type,lot,requested_price,fill_price,"
+             "ticket,deal,retcode,status,reason,placed_at,payload FROM trades")
+        params = []
+        if symbol:
+            q += " WHERE symbol=?"
+            params.append(symbol)
+        q += " ORDER BY placed_at DESC, id DESC LIMIT ?"
+        params.append(int(limit))
+        cur = self.conn.execute(q, params)
+        cols = [d[0] for d in cur.description]
+        return [dict(zip(cols, r)) for r in cur.fetchall()]
+
+    def execution_stats(self) -> dict:
+        from collections import Counter
+        rows = self.load_trades(limit=100000)
+        by_status = Counter(r["status"] for r in rows)
+        return {
+            "total": len(rows),
+            "by_status": dict(by_status),
+            "filled": by_status.get("filled", 0) + by_status.get("placed", 0),
+            "dry_run": by_status.get("dry_run", 0),
+            "rejected": by_status.get("rejected", 0),
+            "symbols": dict(Counter(r["symbol"] for r in rows)),
+        }
 
     def live_training_samples(self) -> list:
         """Resolved live outcomes with their journaled features — tier-3

@@ -16,6 +16,7 @@ from ..ai.llm import LLMAnalyzer
 from ..logsetup import debug, debug_enabled
 from ..ai.symbol_stats import SymbolStats
 from ..symbol_selection import SymbolSelection
+from ..execution.executor import ExecutionEngine
 from .. import pipeline
 
 STATIC_DIR = Path(__file__).parent / "static"
@@ -45,6 +46,30 @@ def create_app(cfg: dict) -> FastAPI:
              "last_pull": None, "last_analysis": None}
     lock = threading.Lock()
     _csm_lock = threading.Lock()   # one background CSM refresh at a time
+
+    # ------------------------------------------------ live execution engine
+    # Scans stored analyses for BUY/SELL setups and places MT5 orders
+    # (respecting execution.enabled / dry_run; see docs/execution.md).
+    execution_engine = ExecutionEngine(cfg, store, allowed_symbols=visible_symbols(),
+                                       verbose=debug_enabled(cfg))
+    if execution_engine.enabled:
+        mode = "DRY-RUN" if execution_engine.dry_run else "LIVE ORDERS"
+        debug(f"[execution] engine enabled ({mode}), magic {execution_engine.magic} -- "
+              f"scanning every {cfg['execution'].get('poll_seconds', 15)}s")
+
+        def _execution_loop():
+            while not execution_engine._stop.is_set():
+                if execution_engine.enabled:
+                    try:
+                        execution_engine.scan_once()
+                    except Exception as e:
+                        execution_engine.state["last_error"] = str(e)
+                        debug(f"[execution] scan error: {e}")
+                execution_engine._stop.wait(
+                    max(5, int(cfg.get("execution", {}).get("poll_seconds", 15))))
+
+        threading.Thread(target=_execution_loop, daemon=True,
+                         name="mt5-execution").start()
 
     auto_cfg = (cfg.get("ai", {}).get("ml", {}).get("auto_retrain") or {})
     auto_run = int(cfg.get("dashboard", {}).get("auto_run_interval", 0) or 0)
@@ -299,6 +324,11 @@ def create_app(cfg: dict) -> FastAPI:
             "llm_enabled": llm.usable,
             "llm_model": llm.model if llm.usable else None,
             "llm_gate": float((cfg.get("ai", {}).get("llm", {}) or {}).get("min_ml_prob", 0.0) or 0.0),
+            "execution": {
+                "enabled": execution_engine.enabled,
+                "dry_run": execution_engine.dry_run,
+                "magic": execution_engine.magic,
+            },
             "analyses": store.list_analyses(),
         }
 
@@ -504,6 +534,67 @@ def create_app(cfg: dict) -> FastAPI:
         return {k: state[k] for k in ("running", "retraining", "last_run",
                                       "last_retrain", "last_error", "demo_mode",
                                       "last_pull", "last_analysis")}
+
+    # ---------------------------------------------------------- execution
+    @app.get("/api/execution/status")
+    def execution_status():
+        """Live-execution engine snapshot: config, account, bot positions."""
+        st = execution_engine.status()
+        st["trades_today"] = store.trades_today()
+        st["stats"] = store.execution_stats()
+        return st
+
+    @app.get("/api/execution/trades")
+    def execution_trades(limit: int = 100, symbol: str = None):
+        """Trade log: every execution attempt (filled/placed/dry-run/rejected)."""
+        return {"rows": store.load_trades(limit=max(1, min(limit, 500)), symbol=symbol),
+                "stats": store.execution_stats()}
+
+    class ExecutionToggleBody(BaseModel):
+        enabled: bool
+        dry_run: bool = None
+
+    @app.post("/api/execution/toggle")
+    def execution_toggle(body: ExecutionToggleBody):
+        """Runtime enable/disable of auto-execution (does not persist to
+        config.yaml; dry_run can be flipped here too)."""
+        execution_engine.enabled = bool(body.enabled)
+        if body.dry_run is not None:
+            execution_engine.dry_run = bool(body.dry_run)
+        mode = "DRY-RUN" if execution_engine.dry_run else "LIVE ORDERS"
+        debug(f"[execution] toggled {'ON' if execution_engine.enabled else 'OFF'} ({mode})")
+        return {"ok": True, "enabled": execution_engine.enabled,
+                "dry_run": execution_engine.dry_run}
+
+    class ExecutionParamsBody(BaseModel):
+        min_score: float = None
+        min_ml_prob: float = None
+
+    @app.post("/api/execution/params")
+    def execution_params(body: ExecutionParamsBody):
+        """Runtime-adjust the score / ML-probability execution gates. Effective
+        on the next engine scan; persisted to data/execution_overrides.json so
+        the new values survive restarts (config.yaml is left untouched)."""
+        if body.min_score is None and body.min_ml_prob is None:
+            return JSONResponse({"ok": False, "error": "nothing to update"},
+                                status_code=422)
+        gates = execution_engine.set_gates(min_score=body.min_score,
+                                           min_ml_prob=body.min_ml_prob)
+        debug(f"[execution] gates set via API: "
+              f"min_score={gates['min_score']:g} min_ml_prob={gates['min_ml_prob']:g}")
+        return {"ok": True, **gates}
+
+    @app.post("/api/execution/flatten")
+    def execution_flatten():
+        """Panic button: close every bot position + cancel every bot pending
+        (magic-number filtered — manual trades are never touched)."""
+        if not execution_engine.enabled:
+            return JSONResponse({"ok": False, "error": "execution is disabled"},
+                                status_code=409)
+        res = execution_engine.flatten()
+        debug(f"[execution] FLATTEN: closed {len(res['closed'])}, "
+              f"canceled {len(res['canceled'])}, errors {len(res['errors'])}")
+        return {"ok": True, **res}
 
     class NoCacheStatic(StaticFiles):
         """Serve static assets with no-cache so UI updates land on normal refresh."""

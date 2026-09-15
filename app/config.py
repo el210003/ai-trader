@@ -48,6 +48,10 @@ DEFAULTS = {
             "backend": "sklearn",
             "parallel": True,
             "workers": 0,
+            "live_outcomes": {              # tier-3: blend resolved live outcomes
+                "enabled": True,
+                "min_samples": 200,
+            },
             "auto_retrain": {
                 "enabled": True,
                 "max_age_days": 7,
@@ -87,13 +91,27 @@ DEFAULTS = {
         "enabled": True,
         "lookback_days": 30,
     },
-    "ai": {
-        "ml": {
-            "live_outcomes": {
-                "enabled": True,
-                "min_samples": 200,
-            },
-        },
+    "execution": {                     # live MT5 auto-trading (see docs/execution.md)
+        "enabled": False,              # master switch — default OFF for safety
+        "dry_run": True,               # true = record orders without sending (SAFE default)
+        "magic": 862001,               # unique id tagging every bot order
+        "entry_type": "market",        # market | limit (limit parks at the zone entry)
+        "deviation": 20,               # max slippage for market orders, in points
+        "risk_percent": 1.0,           # % of balance risked per trade (SL-distance sizing)
+        "fixed_lot": None,             # set a number to bypass risk-percent sizing
+        "allow_min_lot": False,        # when sized lot < broker minimum: false=skip, true=trade min
+        "min_score": 70,               # hybrid final score required to execute
+        "min_ml_prob": 0.50,           # ML win probability required to execute
+        "max_open_positions": 3,       # total bot positions + pendings
+        "max_per_symbol": 1,           # bot positions + pendings per symbol
+        "max_trades_per_day": 5,       # daily cap (local midnight reset)
+        "cooldown_minutes": 240,       # wait after a trade before re-entering symbol+direction
+        "fresh_seconds": 120,          # only execute setups from analyses newer than this
+        "max_spread_points": 40,       # skip entries when the spread is wider
+        "trading_hours": None,         # "07-20" broker-server hours, null = always
+        "pending_expiry_minutes": 240, # limit orders are canceled by the engine after this
+        "poll_seconds": 15,            # how often the engine scans for fresh setups
+        "comment": "ai-trader",        # order comment tag in MT5
     },
     "dashboard": {"host": "127.0.0.1", "port": 8000, "refresh_seconds": 60,
                   "auto_run_interval": 0, "bar_close_watcher": False,
