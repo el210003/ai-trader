@@ -103,6 +103,15 @@ the recommended validation workflow: [`docs/execution.md`](docs/execution.md).
 **Validate with the setups journal first** — auto-trading an unvalidated
 engine is gambling, not trading.
 
+**Runtime-adjustable from the Trade tab** (persisted across restarts in
+`data/execution_overrides.json` — overrides `config.yaml`): the strictness
+gates **min score** (0–100) / **min ML prob** (0–1) and the **order identity**
+— `magic` (applies to new orders only; changing it orphans orders placed under
+the old magic from the engine's view — close them manually first) and
+`comment` (max 31 chars, MT5 display limit). The same changes are available
+via `POST /api/execution/params`. Everything else (position caps, cooldown,
+sizing, entry type) still requires a `config.yaml` edit + restart.
+
 ## The SMC engine (`app/smc/`)
 
 | Module | What it detects |
@@ -186,10 +195,20 @@ Config: `csm:` section (`lookback`, `ma_length`, `ma_type`, `display: MA|ROC`,
 
 ## Dashboard
 
+The sidebar has five tabs: **Setups** (live cards), **Ranked** (all setups by
+score), **Journal** (forward-validation log + ML-bucket calibration), **Perf**
+(effectiveness by verdict/score band/HTF/symbol + insights) and **Trade**.
+
 - Candlestick chart (TradingView lightweight-charts) with order-block & FVG boxes,
   premium/discount shading, EQ line, sweep arrows, BOS/CHoCH markers, entry/SL/TP lines.
 - Setup cards: verdict badge, hybrid score, ML win-probability bar, LLM narrative +
   invalidation, confluence chips.
+- **Trade tab** — live execution monitor: engine mode (OFF / DRY-RUN / LIVE),
+  account strip (warns when terminal autotrading is off), open bot positions &
+  pendings with live P/L, the full trade log with skip reasons, and the
+  controls: **Enable / Switch to LIVE / Flatten all** plus the runtime editors
+  for **Gates** (min score / min ML prob) and **Order identity** (magic /
+  comment) — persisted across restarts.
 - **Symbol filter** — live search box narrows the symbol dropdown; **⚙ modal** to
   enable/disable symbols per pair (persisted in `data/symbol_selection.json`).
 - **Model health** — ML badge shows the model's age; turns amber when stale;
