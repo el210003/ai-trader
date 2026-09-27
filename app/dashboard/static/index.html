@@ -643,12 +643,22 @@ function renderBoxes(){
       if (!showBands) continue;
       for (const key of ['asia','london','ny']){
         const aH = hours[key][0], bH = hours[key][1];
-        let x1 = t2c(D + aH*3600 + offSec), x2 = t2c(D + bH*3600 + offSec);
-        // clamp bands whose endpoint is beyond the data extent (e.g. today's
-        // NY session spills past the newest candle at +3 brokers)
-        if (x1 == null && x2 == null) continue;
-        const l = Math.max(0, Math.min(x1 == null ? 0 : x1, x2 == null ? W : x2));
-        const r = Math.min(W, Math.max(x1 == null ? 0 : x1, x2 == null ? W : x2));
+        const t1 = D + aH*3600 + offSec, t2 = D + bH*3600 + offSec;
+        // anchor the band to the ACTUAL candles inside the session window -
+        // raw timeToCoordinate interpolation would stretch bands across
+        // data gaps (weekends painted half the chart on H1)
+        let lo = null, hi = null;
+        for (const c of candles){
+          if (c.time < t1) continue;
+          if (c.time >= t2) break;
+          if (lo == null) lo = c.time;
+          hi = c.time;
+        }
+        if (lo == null) continue;                 // no bars in session (weekend/holiday)
+        const xa = t2c(lo);
+        if (xa == null) continue;
+        const xb = t2c(hi + tfSec);               // right edge of the last covered bar
+        const l = Math.max(0, xa), r = Math.min(W, xb != null ? xb : (t2c(hi) + 6));
         if (r - l < 2) continue;
         const st = styles[key];
         const el = document.createElement('div');
@@ -1764,6 +1774,13 @@ function renderTrades(j){
 (async function(){
   initChart();
   try{ await loadMeta(); }catch(e){ setStatus('err','server unreachable'); return; }
+  // deep-link ?symbol=&tf= (also used for testing)
+  try{
+    const q = new URLSearchParams(location.search);
+    const qs = q.get('symbol'), qt = (q.get('tf') || '').toUpperCase();
+    if (qs){ const s = $('symbolSel'); if ([...s.options].some(o => o.value === qs)) s.value = qs; }
+    if (qt){ const t = $('tfSel'); if ([...t.options].some(o => o.value.toUpperCase() === qt)) t.value = [...t.options].find(o => o.value.toUpperCase() === qt).value; }
+  }catch(e){}
   await loadAnalysis();
   await loadMtfStatus();
   await loadCsm();
