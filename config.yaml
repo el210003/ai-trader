@@ -227,3 +227,14 @@ dashboard:
   # CLI shortcut:  serve.bat --on-bar-close
   bar_close_watcher: true
   bar_poll_seconds: 10       # how often to peek MT5 for a new bar
+  # Chart session overlay (dashboard only, no engine effect).
+  # Sessions are defined in UTC hours (fractional ok). The chart converts
+  # them to SERVER time using utc_offset: null = auto-detect from the
+  # freshest bar vs the browser clock (most MT5 brokers are +2/+3); set a
+  # number to force (e.g. 2 or 3). Winter/NH conventions below - London/NY
+  # local DST shifts each by 1h in summer.
+  sessions:
+    utc_offset: null         # null = auto-detect | 2 | 3 | any hour offset
+    asia:   [0, 9]           # Tokyo 00:00-09:00 UTC
+    london: [8, 16.5]        # London 08:00-16:30 UTC
+    ny:     [13, 22]         # New York 13:00-22:00 UTC

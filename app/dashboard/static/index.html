@@ -428,6 +428,7 @@ footer{padding:6px 16px;font-size:11px;color:var(--muted);border-top:1px solid v
       <label><input type="checkbox" id="tgPD" checked> <span class="sw" style="background:rgba(242,95,92,.2)"></span>Premium/Discount</label>
       <label><input type="checkbox" id="tgSweeps" checked> Sweeps</label>
       <label><input type="checkbox" id="tgStructure" checked> BOS/CHoCH</label>
+      <label><input type="checkbox" id="tgSessions" checked> Sessions / 0:00</label>
       <label><input type="checkbox" id="tgSwings" checked> Swings</label>
       <label><input type="checkbox" id="tgRej" checked> Rej bars <span id="rejCount" class="count"></span></label>
       <button id="csmHide" title="hide/show the currency strength strip">CSM ⌄</button>
@@ -599,6 +600,71 @@ function renderBoxes(){
   const firstT = candles[0].time;
   const t2c = t => ts.timeToCoordinate(t);
   const p2c = p => state.series.priceToCoordinate(p);
+  const tfSec = candles.length > 1
+    ? Math.max(60, candles[candles.length-1].time - candles[candles.length-2].time) : 900;
+
+  // ---- session bands + server-midnight lines (dashboard.sessions cfg) ----
+  if ($('tgSessions') && $('tgSessions').checked){
+    const scfg = (state.meta && state.meta.sessions) || {};
+    // Broker UTC offset: config override > auto-detect > default +2.
+    // Auto: server_t = utc_t + off, and a fresh bar closes at utc ~ now,
+    // so off ~ tLast + tfSec - now; accept only when hour-aligned and the
+    // data is younger than ~90 min (else weekend/stale -> fallback).
+    let off = Number.isFinite(parseFloat(scfg.utc_offset)) ? parseFloat(scfg.utc_offset) : null;
+    if (off == null){
+      const now = Date.now()/1000;
+      const est = (candles[candles.length-1].time + tfSec) - now;
+      const offH = Math.round(est/3600);
+      off = (Math.abs(est - offH*3600) <= 900 && est > -5400) ? offH : 2;
+    }
+    const offSec = Math.round(off * 3600);
+    const hours = { asia: scfg.asia || [0,9], london: scfg.london || [8,16.5], ny: scfg.ny || [13,22] };
+    const styles = {
+      asia:   {bg:'rgba(245,184,61,.05)',   label:'Asia',   lc:'rgba(245,184,61,.5)'},
+      london: {bg:'rgba(108,158,255,.055)', label:'London', lc:'rgba(108,158,255,.5)'},
+      ny:     {bg:'rgba(45,212,167,.055)',  label:'NY',     lc:'rgba(45,212,167,.5)'},
+    };
+    const showBands = ['M15','H1'].includes(($('tfSel').value || '').toUpperCase());
+    const days = [];
+    for (const c of candles){ const D = c.time - (c.time % 86400); if (!days.length || days[days.length-1] !== D) days.push(D); }
+    for (const D of days){
+      const mx = t2c(D);                                   // 0:00 server-day open
+      if (mx != null && mx > -1 && mx < W + 1){
+        const ml = document.createElement('div');
+        ml.className = 'zone';
+        ml.style.cssText = `left:${mx}px; top:0; width:0; height:${H}px; border-left:1px dashed rgba(140,150,165,.35);`;
+        overlay.appendChild(ml);
+        const mlbl = document.createElement('div');
+        mlbl.className = 'zone-label';
+        mlbl.textContent = '0:00';
+        mlbl.style.left = (mx + 3) + 'px'; mlbl.style.top = '2px';
+        overlay.appendChild(mlbl);
+      }
+      if (!showBands) continue;
+      for (const key of ['asia','london','ny']){
+        const aH = hours[key][0], bH = hours[key][1];
+        let x1 = t2c(D + aH*3600 + offSec), x2 = t2c(D + bH*3600 + offSec);
+        // clamp bands whose endpoint is beyond the data extent (e.g. today's
+        // NY session spills past the newest candle at +3 brokers)
+        if (x1 == null && x2 == null) continue;
+        const l = Math.max(0, Math.min(x1 == null ? 0 : x1, x2 == null ? W : x2));
+        const r = Math.min(W, Math.max(x1 == null ? 0 : x1, x2 == null ? W : x2));
+        if (r - l < 2) continue;
+        const st = styles[key];
+        const el = document.createElement('div');
+        el.className = 'zone';
+        el.style.cssText = `left:${l}px; top:0; width:${r-l}px; height:${H}px; background:${st.bg}; border-left:2px solid ${st.lc};`;
+        overlay.appendChild(el);
+        if (r - l >= 40){
+          const lbl = document.createElement('div');
+          lbl.className = 'zone-label';
+          lbl.textContent = st.label;
+          lbl.style.left = (l + 4) + 'px'; lbl.style.top = '14px';
+          overlay.appendChild(lbl);
+        }
+      }
+    }
+  }
 
   const boxes = [];
   const dr = a.smc.dealing_range;
@@ -659,8 +725,6 @@ function renderBoxes(){
   }
   // ---- rejection-bar candle highlights (RejectionProto family) ----
   if ($('tgRej') && $('tgRej').checked && a.smc.rejections){
-    const tfSec = candles.length > 1
-      ? Math.max(60, candles[candles.length-1].time - candles[candles.length-2].time) : 900;
     for (const r of a.smc.rejections){
       if (r.time < firstT) continue;
       const cx = t2c(r.time), yTop = p2c(r.high), yBot = p2c(r.low);
@@ -1479,7 +1543,7 @@ $('retrainBtn').onclick = async () => {
     else setStatus('err', j.message);
   } finally { setTimeout(()=>{$('retrainBtn').disabled=false;}, 800); }
 };
-for (const id of ['tgOB','tgFVG','tgPD','tgSweeps','tgStructure','tgSwings','tgRej'])
+for (const id of ['tgOB','tgFVG','tgPD','tgSweeps','tgStructure','tgSwings','tgRej','tgSessions'])
   $(id).onchange = () => { if (state.data) renderChart(); };
 
 $('symbolSearch').addEventListener('input', (e) => {
