@@ -428,6 +428,8 @@ footer{padding:6px 16px;font-size:11px;color:var(--muted);border-top:1px solid v
       <label><input type="checkbox" id="tgPD" checked> <span class="sw" style="background:rgba(242,95,92,.2)"></span>Premium/Discount</label>
       <label><input type="checkbox" id="tgSweeps" checked> Sweeps</label>
       <label><input type="checkbox" id="tgStructure" checked> BOS/CHoCH</label>
+      <label><input type="checkbox" id="tgSwings" checked> Swings</label>
+      <label><input type="checkbox" id="tgRej" checked> Rej bars <span id="rejCount" class="count"></span></label>
       <button id="csmHide" title="hide/show the currency strength strip">CSM ⌄</button>
     </div>
 
@@ -608,20 +610,27 @@ function renderBoxes(){
   }
   if ($('tgOB').checked && a.smc.order_blocks){
     for (const ob of a.smc.order_blocks.all){
-      if (ob.mitigated) continue;
+      // mitigated OBs draw faded (dashed) instead of hidden — like TradingView
+      // SMC indicators — so consumed zones stay visible for context
+      const dead = !!ob.mitigated;
       const s = ob.direction === 'bullish'
-        ? {bg:'var(--ob-long)', border:'1px solid rgba(45,212,167,.45)'}
-        : {bg:'var(--ob-short)', border:'1px solid rgba(242,95,92,.45)'};
-      boxes.push({t1:ob.origin_time, t2:null, top:ob.top, bottom:ob.bottom, style:s, label:`OB ${ob.direction==='bullish'?'▲':'▼'}`});
+        ? {bg: dead ? 'rgba(45,212,167,.05)' : 'var(--ob-long)',
+           border: dead ? '1px dashed rgba(45,212,167,.25)' : '1px solid rgba(45,212,167,.45)'}
+        : {bg: dead ? 'rgba(242,95,92,.05)' : 'var(--ob-short)',
+           border: dead ? '1px dashed rgba(242,95,92,.25)' : '1px solid rgba(242,95,92,.45)'};
+      boxes.push({t1:ob.origin_time, t2:null, top:ob.top, bottom:ob.bottom, style:s,
+                  label:`OB ${ob.direction==='bullish'?'▲':'▼'}${dead?' ·mit':''}`});
     }
   }
   if ($('tgFVG').checked && a.smc.fvgs){
     for (const f of a.smc.fvgs.all){
-      if (f.filled) continue;
-      const s = f.direction === 'bullish'
-        ? {bg:'var(--fvg-long)', border:'1px solid rgba(108,158,255,.4)'}
-        : {bg:'var(--fvg-short)', border:'1px solid rgba(245,184,61,.4)'};
-      boxes.push({t1:f.origin_time, t2:null, top:f.top, bottom:f.bottom, style:s, label:'FVG'});
+      const dead = !!f.filled;
+      const s = dead
+        ? {bg:'rgba(120,130,150,.04)', border:'1px dashed rgba(120,130,150,.22)', label:'FVG·filled'}
+        : (f.direction === 'bullish'
+        ? {bg:'var(--fvg-long)', border:'1px solid rgba(108,158,255,.4)', label:'FVG'}
+        : {bg:'var(--fvg-short)', border:'1px solid rgba(245,184,61,.4)', label:'FVG'});
+      boxes.push({t1:f.origin_time, t2:null, top:f.top, bottom:f.bottom, style:s});
     }
   }
 
@@ -633,19 +642,38 @@ function renderBoxes(){
     if (x2 <= x1) continue;
     const yTop = p2c(b.top), yBot = p2c(b.bottom);
     if (yTop == null || yBot == null) continue;
-    const top = Math.min(yTop, yBot), h = Math.max(Math.abs(yBot - yTop), 1);
+    const top = Math.min(yTop, yBot), h = Math.max(Math.abs(yBot - yTop), 3);  // ≥3px: 1-pip FVGs stay visible
     const el = document.createElement('div');
     el.className = 'zone';
     el.style.cssText = `left:${x1}px; top:${top}px; width:${x2-x1}px; height:${h}px; background:${b.style.bg}; border:${b.style.border};`;
     overlay.appendChild(el);
     const text = (b.style.label || '') + (b.label ? ' ' + b.label : '');
-    if (text){
+    if (text && top < H && top + h > 0){   // skip labels of zones entirely off-screen
       const lbl = document.createElement('div');
       lbl.className = 'zone-label';
       lbl.textContent = text;
-      lbl.style.left = Math.max(0, x1 + 2) + 'px';
-      lbl.style.top = Math.max(0, top + 1) + 'px';
+      lbl.style.left = Math.max(0, Math.min(x1 + 2, W - 60)) + 'px';
+      lbl.style.top = Math.max(0, Math.min(top + 1, H - 14)) + 'px';
       overlay.appendChild(lbl);
+    }
+  }
+  // ---- rejection-bar candle highlights (RejectionProto family) ----
+  if ($('tgRej') && $('tgRej').checked && a.smc.rejections){
+    const tfSec = candles.length > 1
+      ? Math.max(60, candles[candles.length-1].time - candles[candles.length-2].time) : 900;
+    for (const r of a.smc.rejections){
+      if (r.time < firstT) continue;
+      const cx = t2c(r.time), yTop = p2c(r.high), yBot = p2c(r.low);
+      if (cx == null || yTop == null || yBot == null) continue;
+      const top = Math.min(yTop, yBot), h = Math.max(Math.abs(yBot - yTop), 3);
+      const col = r.bucket === 0 ? '245,184,61' : (r.direction === 'bull' ? '45,212,167' : '242,95,92');
+      const mom = r.bucket === 1;                      // momentum rejects: bigger, stronger
+      const half = mom ? 7 : 4, pad = mom ? 5 : 3;
+      const el = document.createElement('div');
+      el.className = 'zone';
+      el.style.cssText = `left:${cx - half}px; top:${top - pad}px; width:${half * 2}px; height:${h + pad * 2}px;`
+        + `background:rgba(${col},${mom ? .22 : .16}); border:${mom ? 2 : 1}px solid rgba(${col},${mom ? .75 : .55}); border-radius:2px;`;
+      overlay.appendChild(el);
     }
   }
 }
@@ -709,8 +737,32 @@ function renderChart(){
         shape:'circle', size:1, text: e.type.toUpperCase() });
     }
   }
+  if ($('tgSwings').checked && a.smc.swing_pivots){   // EA DrawSwingMarker: silver dot at the pivot extreme
+    for (const p of a.smc.swing_pivots){
+      if (!times.has(p.time)) continue;
+      markers.push({ time:p.time,
+        position: p.type === 'high' ? 'aboveBar' : 'belowBar',
+        color: '#aeb8c4', shape: 'circle', size: 1 });
+    }
+  }
+  if ($('tgRej').checked && a.smc.rejections){   // rejection-bar family (RejectionProto port)
+    const BUCKET = {0:'A', 1:'mom', 2:''};
+    for (const r of a.smc.rejections){
+      if (!times.has(r.time)) continue;
+      const bull = r.direction === 'bull';
+      markers.push({ time:r.time,
+        position: bull ? 'belowBar' : 'aboveBar',
+        color: r.bucket === 0 ? '#f5b83d' : (bull ? '#2dd4a7' : '#f25f5c'),  // gold = A-grade
+        shape: bull ? 'arrowUp' : 'arrowDown',
+        size: r.bucket === 1 ? 2 : 1,                                        // momentum = bigger
+        text: 'rej' + (BUCKET[r.bucket] ? '·' + BUCKET[r.bucket] : '') });
+    }
+  }
   markers.sort((x,y)=>x.time-y.time);
   state.series.setMarkers(markers);
+  const rejIn = ($('tgRej').checked && a.smc.rejections) ?
+    a.smc.rejections.filter(r => times.has(r.time)).length : null;
+  $('rejCount').textContent = (rejIn != null) ? String(rejIn) : '';
 
   const active = (a.setups||[]).find(s => s.verdict==='BUY' || s.verdict==='SELL') || (a.setups||[])[0];
   if (active){
@@ -987,6 +1039,8 @@ async function loadAnalysis(){
     state.data = await r.json();
     setStatus(state.data.analysis ? 'ok' : '', state.data.analysis ? `${symbol} ${tf} ready` : 'no analysis yet');
     renderChart(); renderStructure(); renderSetups();
+    setTimeout(renderBoxes, 300);   // re-run after the chart autoscale settles
+    setTimeout(renderBoxes, 900);   // (early passes can catch transient coordinates)
     renderCsmStrip();   // re-render for the selected symbol/tf from cached snapshot
   }catch(e){ setStatus('err', String(e)); }
 }
@@ -1425,7 +1479,7 @@ $('retrainBtn').onclick = async () => {
     else setStatus('err', j.message);
   } finally { setTimeout(()=>{$('retrainBtn').disabled=false;}, 800); }
 };
-for (const id of ['tgOB','tgFVG','tgPD','tgSweeps','tgStructure'])
+for (const id of ['tgOB','tgFVG','tgPD','tgSweeps','tgStructure','tgSwings','tgRej'])
   $(id).onchange = () => { if (state.data) renderChart(); };
 
 $('symbolSearch').addEventListener('input', (e) => {
