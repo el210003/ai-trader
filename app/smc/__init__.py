@@ -7,6 +7,7 @@ from .liquidity import cluster_equal_levels, detect_sweeps
 from .pd_zones import compute_dealing_range
 from .order_blocks import find_order_blocks
 from .fvg import find_fvgs
+from .rejection import detect_rejections, detect_pivots
 
 
 def atr(df: pd.DataFrame, period: int = 14) -> float:
@@ -31,12 +32,16 @@ def analyze(df: pd.DataFrame, cfg: dict) -> dict:
     obs = find_order_blocks(df, events, int(cfg.get("ob_max_age_bars", 300)))
     fvgs = find_fvgs(df, int(cfg.get("fvg_max_age_bars", 200)))
     atr_val = atr(df, int(cfg.get("atr_period", 14)))
+    rejections = detect_rejections(df, pools, atr_val, cfg)
+    swing_pivots = detect_pivots(df, lookback)   # EA IfPivotAdd book (chart dots)
 
     return {
         "trend": trend,
         "swings": swings[-60:],
         "events": events,
         "sweeps": sweeps,
+        "rejections": rejections,
+        "swing_pivots": swing_pivots,
         "liquidity_pools": pools,
         "dealing_range": dealing_range,
         "order_blocks": obs,

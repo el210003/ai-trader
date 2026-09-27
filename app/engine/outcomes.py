@@ -34,10 +34,11 @@ def _resolve_one(df, r: dict, horizon: int, entry_valid_bars: int = 24):
     entry, sl, tp = r["entry"], r["stop_loss"], r["take_profit"]
     direction = (r["direction"] or "").lower()
     tol = 0.0
+    payload = {}
     try:
         import json as _json
-        _p = _json.loads(r.get("payload") or "{}") if r.get("payload") else {}
-        tol = float(_p.get("fill_tolerance") or 0.0)
+        payload = _json.loads(r.get("payload") or "{}") if r.get("payload") else {}
+        tol = float(payload.get("fill_tolerance") or 0.0)
     except Exception:
         tol = 0.0
     if entry is None or sl is None or tp is None or direction not in ("long", "short"):
@@ -58,7 +59,8 @@ def _resolve_one(df, r: dict, horizon: int, entry_valid_bars: int = 24):
     filled = False
     fill_time = None
     mfe = mae = 0.0
-    valid = int(entry_valid_bars)
+    # per-setup validity override (rejection setups carry their own 8-bar RET window)
+    valid = int(payload.get("entry_valid_bars") or entry_valid_bars)
     fill_deadline = start + max(1, valid) if valid > 0 else start + max(1, int(horizon))
     end = min(n, start + max(1, int(horizon)))
     for k in range(start, end):

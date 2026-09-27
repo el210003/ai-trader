@@ -11,6 +11,8 @@ the ML features.
 """
 from typing import List, Optional
 
+from ..smc.rejection import swept_level_name, infer_point, _half_up
+
 
 def _targets_above(levels: List[float], floor: float) -> List[float]:
     return sorted({p for p in levels if p > floor})
@@ -44,6 +46,228 @@ def _target_liquidity(direction: str, entry: float, close: float, risk: float,
             if min_rr <= rr:
                 return t, rr
         return entry - default_rr * risk, default_rr
+
+
+def _mtf_confluence(direction: str, entry: float, atr_v: float,
+                    htf_ctx: dict, mtf_cfg: dict, csm_dir: str,
+                    zone: dict = None):
+    """MTF confluence (H1/H4 context projected onto the entry TF), shared by
+    the zone and rejection families. Returns (lines, trend_align, pd_align,
+    in_zone); the zone-overlap test runs only when a zone dict is given."""
+    want_trend = "bullish" if direction == "long" else "bearish"
+    want_zone_dir = "bullish" if direction == "long" else "bearish"
+    htf_lines, trend_vals, pd_vals, in_zone = [], [], [], 0.0
+    zone_buf = float((mtf_cfg or {}).get("zone_buffer_atr", 0.5)) * atr_v
+    for htf, c in (htf_ctx or {}).items():        # insertion order: nearest HTF first
+        t_ok = c.get("trend") == want_trend
+        trend_vals.append(1.0 if t_ok else 0.0)
+        if t_ok:
+            htf_lines.append(f"{htf} structure aligned")
+        eq = c.get("equilibrium")
+        if eq is not None:
+            half = "discount" if direction == "long" else "premium"
+            good_half = (entry <= eq) if direction == "long" else (entry >= eq)
+            pd_vals.append(1.0 if good_half else 0.0)
+            if good_half:
+                htf_lines.append(f"entry in {htf} {half}")
+        if zone is not None:
+            for hz in c.get("zones", []):
+                if hz["direction"] != want_zone_dir:
+                    continue
+                if not (zone["bottom"] > hz["top"] + zone_buf or zone["top"] < hz["bottom"] - zone_buf):
+                    htf_lines.append(f"entry at {htf} {hz['type'].replace('_', ' ')}")
+                    in_zone = 1.0
+                    break
+    if csm_dir == direction:
+        htf_lines.append("CSM aligned across timeframes")
+    trend_align = sum(trend_vals) / len(trend_vals) if trend_vals else None
+    pd_align = sum(pd_vals) / len(pd_vals) if pd_vals else None
+    return htf_lines, trend_align, pd_align, in_zone
+
+
+def _rejection_setups(symbol: str, tf: str, df, smc: dict, cfg: dict,
+                      htf_ctx: dict = None, csm_dir: str = None,
+                      mtf_cfg: dict = None) -> List[dict]:
+    """Rejection-bar entry family (RejectionProto port, see
+    docs/rejection-entry.md). When a recent closed bar is a REJECT (engulfing
+    bar that swept a live level and closed back), arm a setup whose entry is a
+    retrace limit into the rejection bar's body (default 50%, the RET variant)
+    or a close-chase (mode: close), SL beyond the bar extreme, TP at the
+    nearest opposing liquidity (NOT the fixed-2R geometry the research proved
+    net-negative)."""
+    rj = cfg.get("rejection") or {}
+    if not rj.get("enabled", True):
+        return []
+    events = smc.get("rejections") or []
+    atr_v = smc["atr"]
+    if not events or atr_v <= 0:
+        return []
+
+    n = len(df)
+    close = smc["last_close"]
+    rng = smc["dealing_range"]
+    trend = smc["trend"]
+    mode = (rj.get("mode") or "retrace").strip().lower()
+    retrace_pct = min(100.0, max(0.0, float(rj.get("retrace_pct", 50.0))))
+    entry_valid = int(rj.get("entry_valid_bars", 8))
+    trigger_lb = max(1, int(rj.get("trigger_lookback_bars", 2)))
+    directional = bool(rj.get("require_directional_sweep", True))
+    allowed = {int(b) for b in (rj.get("buckets") or [0, 1, 2])}
+    buffer_atr = float(rj.get("sl_buffer_atr", 0.25))
+    min_risk = float(rj.get("min_risk_atr", 0.30)) * atr_v
+    max_retrace = float(rj.get("max_retrace_atr", 1.0))
+    min_rr = float(cfg.get("min_rr", 1.5))
+    default_rr = float(cfg.get("default_rr", 2.0))
+    max_rr = float(cfg.get("max_rr", 5.0))
+    retest_buffer = float(cfg.get("retest_buffer_atr", 0.20)) * atr_v
+    point = infer_point(df)
+
+    setups: List[dict] = []
+    seen = set()
+    for ev in reversed(events):                    # newest first
+        if ev["index"] < n - trigger_lb:
+            break                                  # older events are ineligible
+        if ev["index"] in seen:
+            continue
+        seen.add(ev["index"])
+        if ev["bucket"] not in allowed:
+            continue
+        direction = "long" if ev["direction"] == "bull" else "short"
+        want_sweep_side = "sellside" if direction == "long" else "buyside"
+        if directional and not any(s["side"] == want_sweep_side for s in ev["swept"]):
+            continue
+
+        i = ev["index"]
+        o_i = float(df["open"].iat[i])
+        c_i = float(df["close"].iat[i])
+        body_top, body_bot = max(o_i, c_i), min(o_i, c_i)
+        aligned = (direction == "long" and trend == "bullish") or \
+                  (direction == "short" and trend == "bearish")
+
+        # ---- entry / SL. Retrace entry follows the EA's RetraceArm exactly:
+        # a limit `retrace_pct` deep into the body FROM THE CLOSE SIDE, depth
+        # rounded half-up to a placeable point price (depthPts =
+        # (bodyPts*pct + 50) / 100; limitPts = cPts -+ depthPts).
+        body_pts = _half_up(abs(c_i - o_i) / point)
+        depth_pts = _half_up(body_pts * retrace_pct / 100.0)
+        if direction == "long":
+            if mode == "close":
+                entry = c_i
+            else:
+                entry = c_i - depth_pts * point
+            sl = float(df["low"].iat[i]) - buffer_atr * atr_v
+            risk = entry - sl
+            if risk < min_risk:                    # volatility floor (zone-path rule)
+                sl = entry - min_risk
+                risk = min_risk
+            if risk <= 0:
+                continue
+            run_atr = (close - entry) / atr_v      # pullback the fill needs
+        else:
+            if mode == "close":
+                entry = c_i
+            else:
+                entry = c_i + depth_pts * point
+            sl = float(df["high"].iat[i]) + buffer_atr * atr_v
+            risk = sl - entry
+            if risk < min_risk:
+                sl = entry + min_risk
+                risk = min_risk
+            if risk <= 0:
+                continue
+            run_atr = (entry - close) / atr_v
+
+        if mode != "close" and run_atr > max_retrace:
+            continue                               # retrace too deep to fill in time
+
+        # entry already touched since the signal bar? the fill window is gone
+        if cfg.get("skip_already_tested", True):
+            tested = False
+            for k in range(i + 1, n):
+                if direction == "long" and df["low"].iat[k] <= entry:
+                    tested = True
+                    break
+                if direction == "short" and df["high"].iat[k] >= entry:
+                    tested = True
+                    break
+            if tested:
+                continue
+
+        # ---- TP: nearest opposing liquidity (NOT fixed 2R — the research's
+        # binding constraint; see docs/rejectionproto-research.md §4.2)
+        htf_pools: List[float] = []
+        for c in (htf_ctx or {}).values():
+            htf_pools.extend(c.get(want_sweep_side, []))
+        tp, rr = _target_liquidity(direction, entry, close, risk, smc,
+                                   min_rr, default_rr, extra_pools=htf_pools)
+        if rr > max_rr:
+            tp = entry + max_rr * risk if direction == "long" else entry - max_rr * risk
+            rr = max_rr
+        if rr < min_rr:
+            continue
+
+        # ---- MTF confluence (zone=None: no zone-overlap test)
+        want_trend = "bullish" if direction == "long" else "bearish"
+        htf_lines, trend_align, pd_align, in_zone = _mtf_confluence(
+            direction, entry, atr_v, htf_ctx, mtf_cfg, csm_dir, zone=None)
+        if (mtf_cfg or {}).get("require_htf_bias", False) and htf_ctx:
+            nearest = next(iter(htf_ctx))
+            if htf_ctx[nearest].get("trend") != want_trend:
+                continue
+
+        conf: List[str] = []
+        if aligned:
+            conf.append("market structure aligned")
+        for s in ev["swept"]:
+            conf.append(f"swept {swept_level_name(s['side'], s['kind'])} "
+                        f"@ {s['level']:.5f} ({ev['depth']:.0f}% depth)")
+        if ev["bucket"] == 1:
+            conf.append(f"momentum reject (exp {ev['exp']:.1f}x)")
+        elif ev["bucket"] == 0:
+            conf.append(f"A-grade reject (exp {ev['exp']:.1f}x, "
+                        f"close loc {ev['clv']:.0f}%)")
+        else:
+            conf.append("rejection bar")
+        conf.append(f"{mode} entry"
+                    + (f" at {retrace_pct:.0f}% of body from close" if mode == "retrace" else ""))
+        conf.extend(htf_lines)
+
+        range_span = rng["top"] - rng["bottom"]
+        range_pos = (entry - rng["bottom"]) / range_span if range_span > 0 else 0.5
+
+        setups.append({
+            "symbol": symbol, "tf": tf, "direction": direction, "status": "active",
+            "setup_kind": "rejection",
+            "entry_style": mode,
+            "entry": float(entry), "stop_loss": float(sl), "take_profit": float(tp),
+            "rr": round(float(rr), 2),
+            "entry_distance_atr": round(float(run_atr), 2),
+            "fill_tolerance": round(float(retest_buffer), 8),
+            "entry_valid_bars": entry_valid,
+            "atr": float(atr_v),
+            "entry_zone": {"type": "rejection_bar", "top": float(body_top),
+                           "bottom": float(body_bot),
+                           "origin_time": int(ev["time"]), "origin_index": int(i)},
+            "range_position": round(float(range_pos), 3),
+            "trend_aligned": bool(aligned),
+            "has_recent_sweep": True,
+            "confluences": conf,
+            "htf_metrics": {
+                "trend_align": trend_align,
+                "pd_alignment": pd_align,
+                "in_htf_zone": in_zone,
+            },
+            "rejection": {
+                "bucket": ev["bucket"], "exp": ev["exp"], "clv": ev["clv"],
+                "depth": ev["depth"], "defs": ev["defs"], "mode": mode,
+                "swept": [{"side": s["side"], "kind": s["kind"],
+                           "level": float(s["level"])} for s in ev["swept"]],
+            },
+            "formed_index": i,
+            "formed_at": int(df["time"].iat[i]),
+            "last_close": close,
+        })
+    return setups
 
 
 def build_setups(symbol: str, tf: str, df, smc: dict, cfg: dict,
@@ -180,36 +404,14 @@ def build_setups(symbol: str, tf: str, df, smc: dict, cfg: dict,
             continue
 
         # ---- MTF confluence (H1/H4 context projected onto this entry TF)
-        want_trend = "bullish" if direction == "long" else "bearish"
-        htf_lines, trend_vals, pd_vals, in_zone = [], [], [], 0.0
-        zone_buf = float((mtf_cfg or {}).get("zone_buffer_atr", 0.5)) * atr_v
-        for htf, c in (htf_ctx or {}).items():        # insertion order: nearest HTF first
-            t_ok = c.get("trend") == want_trend
-            trend_vals.append(1.0 if t_ok else 0.0)
-            if t_ok:
-                htf_lines.append(f"{htf} structure aligned")
-            eq = c.get("equilibrium")
-            if eq is not None:
-                half = "discount" if direction == "long" else "premium"
-                good_half = (entry <= eq) if direction == "long" else (entry >= eq)
-                pd_vals.append(1.0 if good_half else 0.0)
-                if good_half:
-                    htf_lines.append(f"entry in {htf} {half}")
-            for hz in c.get("zones", []):
-                if hz["direction"] != want_zone_dir:
-                    continue
-                if not (z["bottom"] > hz["top"] + zone_buf or z["top"] < hz["bottom"] - zone_buf):
-                    htf_lines.append(f"entry at {htf} {hz['type'].replace('_', ' ')}")
-                    in_zone = 1.0
-                    break
-        if csm_dir == direction:
-            htf_lines.append("CSM aligned across timeframes")
+        htf_lines, trend_align, pd_align, in_zone = _mtf_confluence(
+            direction, entry, atr_v, htf_ctx, mtf_cfg, csm_dir, zone=z)
         conf.extend(htf_lines)
 
         # optional hard filter: nearest HTF (e.g. H1 for M15) must agree
         if (mtf_cfg or {}).get("require_htf_bias", False) and htf_ctx:
             nearest = next(iter(htf_ctx))
-            if htf_ctx[nearest].get("trend") != want_trend:
+            if htf_ctx[nearest].get("trend") != ("bullish" if direction == "long" else "bearish"):
                 continue
 
         range_span = rng["top"] - rng["bottom"]
@@ -229,12 +431,17 @@ def build_setups(symbol: str, tf: str, df, smc: dict, cfg: dict,
             "has_recent_sweep": bool(recent),
             "confluences": conf,
             "htf_metrics": {
-                "trend_align": sum(trend_vals) / len(trend_vals) if trend_vals else None,
-                "pd_alignment": sum(pd_vals) / len(pd_vals) if pd_vals else None,
+                "trend_align": trend_align,
+                "pd_alignment": pd_align,
                 "in_htf_zone": in_zone,
             },
             "formed_index": n - 1,
             "formed_at": int(df["time"].iat[-1]),
             "last_close": close,
         })
+
+    # ---- rejection-bar family (config-gated; docs/rejection-entry.md)
+    setups.extend(_rejection_setups(symbol, tf, df, smc, cfg,
+                                    htf_ctx=htf_ctx, csm_dir=csm_dir,
+                                    mtf_cfg=mtf_cfg))
     return setups

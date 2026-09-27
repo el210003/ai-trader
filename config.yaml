@@ -70,6 +70,31 @@ smc:
                              # bars of its zone forming (kills stale late fills)
   atr_period: 14
 
+  # --- Rejection-bar entry family (RejectionProto port; docs/rejection-entry.md).
+  # An engulfing bar that swept a live level and closed back (spring/fakey) arms
+  # a setup: retrace limit into the bar body, SL beyond the bar extreme, TP at
+  # the nearest opposing liquidity. NOTE: the prototype's close-chase + fixed-2R
+  # geometry was proven net-negative (tick-exact, 72k trades) — the defaults
+  # here deliberately differ (retrace entry, liquidity targets).
+  rejection:
+    enabled: true             # emit rejection setups alongside zone setups
+    mode: retrace             # retrace = limit inside the bar body | close = chase at bar close
+    retrace_pct: 50           # entry depth into the bar body from the close side, %
+                              # (50 = body midpoint, the RET variant; EA rounding: half-up points)
+    entry_valid_bars: 8       # RET window: unfilled retrace entries expire after 8 bars
+    trigger_lookback_bars: 2  # rejection bars this recent can still arm a setup
+    require_directional_sweep: true  # longs need a sellside sweep (spring), shorts buyside
+    use_day_extremes: true    # sweep references include the running server-day H/L (EA: InpUseDayExtreme)
+    buckets: [0, 1, 2]        # trade which buckets: 0=A-grade, 1=momentum, 2=other
+    avg_body_bars: 20         # expansion baseline (prototype InpAvgBodyBars)
+    mom_exp_tenths: 20        # A-grade upper bound: exp < 2.0x (InpMomExpTenths)
+    big_exp_tenths: 30        # momentum lower bound: exp >= 3.0x (InpBigExpTenths)
+    weak_close_pct: 50        # A-grade close-location bound (InpWeakClosePct)
+    min_range_atr: 0.05       # noise gate: bar range must exceed this ATR fraction
+    sl_buffer_atr: 0.25       # stop buffer beyond the rejection bar extreme
+    min_risk_atr: 0.30        # rejection stops are tighter than zone stops (main: 0.75)
+    max_retrace_atr: 1.0      # skip when the retrace entry sits this far from bar close
+
 ai:
   ml:
     model_path: data/models/setup_classifier.joblib

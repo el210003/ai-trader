@@ -16,7 +16,8 @@ def label_setup(df, setup: dict, horizon: int, entry_valid_bars: int = 24):
     direction = setup["direction"]
     entry, sl, tp = setup["entry"], setup["stop_loss"], setup["take_profit"]
     tol = float(setup.get("fill_tolerance") or 0.0)
-    valid = int(entry_valid_bars)
+    # per-setup validity override (rejection setups carry their own 8-bar RET window)
+    valid = int(setup.get("entry_valid_bars") or entry_valid_bars)
 
     filled = False
     limit_start = i + 1

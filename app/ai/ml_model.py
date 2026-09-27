@@ -17,7 +17,7 @@ from .features import FEATURES, feature_vector
 # bump when setup-construction behavior changes (retest buffer, validity
 # window, gates...) - when it changes, deployed models auto-retrain to stay
 # aligned with the setup distribution they predict.
-BUILDER_VERSION = "v3-entry-validity"
+BUILDER_VERSION = "v4-rejection-family"
 
 
 def _build_model(backend: str):

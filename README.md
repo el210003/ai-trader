@@ -343,6 +343,10 @@ the environment you serve with.
   becomes a concrete trade setup: direction gate, zone selection, entry,
   stop-loss with ATR floor, take-profit from liquidity pools, RR cap, and
   confluence scoring.
+- [`docs/rejection-entry.md`](docs/rejection-entry.md) — the rejection-bar entry
+  family (RejectionProto port): engulfing + level-sweep detection, momentum /
+  A-grade / other buckets, retrace-limit entry at 50% of the bar body, and the
+  a-priori measurement plan that respects the prototype's negative verdict.
 - [`docs/hybrid-fusion.md`](docs/hybrid-fusion.md) — how the ML score and the
   LLM verdict combine into the final score and `BUY`/`SELL`/`WAIT`/`AVOID`
   verdict, with worked examples and failure-mode coverage.

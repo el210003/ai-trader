@@ -378,6 +378,12 @@ def create_app(cfg: dict) -> FastAPI:
     @app.get("/api/analysis")
     def analysis(symbol: str = Query(...), tf: str = Query(...), bars: int = 400):
         payload = store.load_analysis(symbol, tf)
+        if payload is not None:
+            smc = payload.get("smc") or {}
+            # stale-schema guard: pre-rejection or pre-pivot-book analyses are
+            # regenerated on the fly (one-time per pair; result is re-stored)
+            if "rejections" not in smc or "swing_pivots" not in smc:
+                payload = None
         if payload is None:
             ml.load()   # pick up a model retrained by a background job
             payload = pipeline.analyze_symbol(store, symbol, tf, cfg, ml, llm)

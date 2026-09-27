@@ -450,16 +450,20 @@ class ExecutionEngine:
         comment = (self.x.get("comment") or "ai-trader")
         deviation = self._int("deviation", 20)
 
+        # per-setup entry style overrides the engine default (rejection setups
+        # carry entry_style: retrace -> limit into the rejection bar body)
+        entry_type = ((s.get("entry_style") or self.x.get("entry_type"))
+                      or "market").strip().lower()
+
         # ---- dry run: record what WOULD be sent
         if self.dry_run:
             rec = {**base, "status": "dry_run", "lot": lot,
-                   "order_type": self.x.get("entry_type", "market"),
+                   "order_type": entry_type,
                    "requested_price": ref_price, "reason": "dry run (no order sent)"}
             self.store.record_trade(self._row(rec, s))
             return {**rec, "price": ref_price}
 
         # ---- live send
-        entry_type = (self.x.get("entry_type") or "market").strip().lower()
         if entry_type == "limit":
             # limit at the setup's zone entry; fall back to market when the
             # zone is already at/past the market (price would fill instantly)
@@ -495,7 +499,8 @@ class ExecutionEngine:
         """Flatten an execution record into a trades-table row."""
         payload = {k: setup.get(k) for k in
                    ("confluences", "entry_zone", "range_position", "rr",
-                    "htf_metrics", "generated_at", "llm_score")}
+                    "htf_metrics", "generated_at", "llm_score",
+                    "setup_kind", "rejection", "entry_style", "entry_valid_bars")}
         payload["engine"] = {"magic": self.magic, "dry_run": self.dry_run,
                              "risk_percent": self.x.get("risk_percent"),
                              "fixed_lot": self.x.get("fixed_lot")}

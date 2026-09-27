@@ -29,6 +29,12 @@ FEATURES = [
     "htf_trend_align",         # mean(1 HTF trend matches direction, 0 opposed); 0.5 = no ctx
     "htf_pd_alignment",        # mean(1 entry in correct HTF premium/discount half)
     "htf_tp_distance_atr",     # entry -> nearest HTF liquidity pool (ATR units, cap 20)
+
+    # ----- rejection-bar family (RejectionProto port; neutral for zone setups) -----
+    "rej_exp",                 # expansion: body vs 20-bar avg body (x); 0 = not a rejection
+    "rej_clv",                 # close location value % (50 = neutral)
+    "rej_is_momentum",         # 1 = momentum reject (exp >= 3x)
+    "rej_is_agrade",           # 1 = A-grade reject (exp < 2x + weak close)
 ]
 
 
@@ -102,6 +108,15 @@ def make_features(df, setup: dict, smc: dict, cfg: dict,
             if beyond:
                 tp_dist = entry - max(beyond)
 
+    # ---- rejection-bar metrics (None -> neutral priors for zone setups)
+    rej = setup.get("rejection") or {}
+    if rej:
+        rej_exp = float(rej.get("exp") or 0.0)
+        rej_clv = float(rej["clv"]) if rej.get("clv") is not None else 50.0
+        rej_bucket = int(rej.get("bucket", 2))
+    else:
+        rej_exp, rej_clv, rej_bucket = 0.0, 50.0, 2
+
     return {
         "rr": float(setup["rr"]),
         "atr_pct": float(atr_v / close * 100.0),
@@ -122,6 +137,10 @@ def make_features(df, setup: dict, smc: dict, cfg: dict,
         "htf_pd_alignment": float(pd_align) if pd_align is not None else 0.5,
         "entry_in_htf_zone": float(htf.get("in_htf_zone") or 0.0),
         "htf_tp_distance_atr": float(min(cap, tp_dist / atr_v)),
+        "rej_exp": rej_exp,
+        "rej_clv": rej_clv,
+        "rej_is_momentum": 1.0 if (rej and rej_bucket == 1) else 0.0,
+        "rej_is_agrade": 1.0 if (rej and rej_bucket == 0) else 0.0,
     }
 
 
