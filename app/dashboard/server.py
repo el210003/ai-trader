@@ -10,6 +10,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from ..data.store import Store
+from ..data import mt5_client
 from ..data.mt5_client import load_discovered_symbols
 from ..ai.ml_model import SetupML
 from ..ai.llm import LLMAnalyzer
