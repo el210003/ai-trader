@@ -1595,10 +1595,40 @@ $('btnInvert').onclick = () => {
 $('btnSave').onclick = saveSettings;
 
 let autoTimer = null;
+let liveTimer = null;
+async function liveTick(){
+  // live forming bar: pull just the viewed pair's last candles from MT5 and
+  // merge into the chart - analysis/markers stay on closed bars (untouched)
+  if (document.hidden || !$('autoRefresh').checked || !state.data) return;
+  const symbol = $('symbolSel').value, tf = $('tfSel').value;
+  if (!symbol) return;
+  try{
+    const r = await fetch(`/api/live?symbol=${encodeURIComponent(symbol)}&tf=${encodeURIComponent(tf)}`);
+    if (!r.ok) return;
+    const j = await r.json();
+    const cs = state.data && state.data.candles;
+    if (!cs || !j.candles || !j.candles.length) return;
+    let changed = false;
+    for (const c of j.candles){
+      const last = cs[cs.length-1];
+      if (last && last.time === c.time){
+        if (last.open !== c.open || last.high !== c.high || last.low !== c.low || last.close !== c.close){ cs[cs.length-1] = c; changed = true; }
+      } else if (!last || c.time > last.time){
+        cs.push(c); if (cs.length > 500) cs.shift(); changed = true;
+      }
+    }
+    if (changed) renderChart();
+  }catch(e){ /* silent - the full view refresh resyncs anyway */ }
+}
 function setupAuto(){
   if (autoTimer) clearInterval(autoTimer);
-  if ($('autoRefresh').checked && state.meta)
+  if (liveTimer) clearInterval(liveTimer);
+  if ($('autoRefresh').checked && state.meta){
     autoTimer = setInterval(loadAnalysis, Math.max(15, state.meta.refresh_seconds)*1000);
+    // live bar polls 4x faster than the view refresh (min 5s, max 30s)
+    const liveMs = Math.max(5000, Math.min(30000, Math.floor(state.meta.refresh_seconds*1000/4)));
+    liveTimer = setInterval(liveTick, liveMs);
+  }
 }
 $('autoRefresh').onchange = setupAuto;
 

@@ -401,6 +401,28 @@ def create_app(cfg: dict) -> FastAPI:
         ]
         return {"analysis": payload, "candles": candle_list}
 
+    # ---------------------------------------------------------- live bar
+    @app.get("/api/live")
+    def live(symbol: str = Query(...), tf: str = Query(...)):
+        """Pull the FORMING bar for one pair straight from MT5, upsert it,
+        return the last candles. Called by the dashboard view on a fast timer
+        so the current candle ticks in near-real-time without waiting for the
+        bar-close watcher. Analysis keeps using closed bars only
+        (analyze_symbol drop_last_bar=True) - this never triggers analysis."""
+        try:
+            df = mt5_client.fetch_ohlcv(symbol, tf, 3, demo=demo_mode,
+                                        cfg_mt5=cfg["mt5"], mt5=None)
+            if df is None or df.empty:
+                return JSONResponse(
+                    {"error": f"no live data for {symbol} {tf}"}, status_code=404)
+            store.upsert_candles(df, symbol, tf)
+            return {"candles": [
+                {"time": int(r.time), "open": float(r.open), "high": float(r.high),
+                 "low": float(r.low), "close": float(r.close)}
+                for r in df.tail(2).itertuples()]}
+        except Exception as e:
+            return JSONResponse({"error": str(e)}, status_code=500)
+
     # ---------------------------------------------------------- lifecycle
     @app.post("/api/refresh")
     def refresh(demo: bool = False):
