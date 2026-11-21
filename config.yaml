@@ -107,6 +107,10 @@ ai:
                              # at large row counts (100k+ blended outcomes)
     parallel: true           # replay symbols in parallel worker processes
     workers: 0               # 0 = auto (CPU cores - 1, capped at 8)
+    fast_replay: true        # training replay analyzes each series ONCE and
+                             # assembles per-step SMC context by index filters
+                             # (~60x faster, bit-identical training rows).
+                             # false = exact per-step analyzer (slow)
     live_outcomes:          # tier-3: blend resolved live outcomes into training
       enabled: true         # trains blended vs replay-only, keeps better cv_auc
       min_samples: 200      # do not blend below this many resolved live outcomes

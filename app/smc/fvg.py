@@ -4,7 +4,7 @@ magnet/reaction zones when price returns to them."""
 from typing import List
 
 
-def find_fvgs(df, max_age_bars: int = 200) -> dict:
+def find_fvgs(df) -> list:
     highs = df["high"].values
     lows = df["low"].values
     times = df["time"].values
@@ -38,8 +38,20 @@ def find_fvgs(df, max_age_bars: int = 200) -> dict:
             "filled": filled_index is not None,
         })
 
-    fresh = [
-        f for f in fvgs
-        if not f["filled"] and (n - 1) - f["origin_index"] <= max_age_bars
-    ]
-    return {"all": fvgs[-14:], "fresh": fresh[-8:]}
+    return fvgs                       # untrimmed; callers apply fvg_view()
+
+
+def fvg_view(fvgs: list, i: int, max_age_bars: int = 200) -> dict:
+    """As-of-bar-i view of the untrimmed FVG list (i = n-1 reproduces the
+    original trimmed output exactly)."""
+    all_i = [f for f in fvgs if f["origin_index"] <= i][-14:]
+    fresh = []
+    for f in fvgs:
+        if f["origin_index"] > i or i - f["origin_index"] > max_age_bars:
+            continue
+        if f["filled_index"] is not None and f["filled_index"] <= i:
+            continue                      # already filled as of i
+        if f["filled_index"] is not None:
+            f = dict(f, filled_index=None, filled=False)   # fill happens after i
+        fresh.append(f)
+    return {"all": all_i, "fresh": fresh[-8:]}

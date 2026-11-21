@@ -55,6 +55,8 @@ import math
 from decimal import Decimal
 from typing import List, Optional, Tuple
 
+import numpy as np
+
 _SIDE_NAMES = {
     ("buyside", "swing_high"): "swing high",
     ("sellside", "swing_low"): "swing low",
@@ -349,3 +351,233 @@ def detect_rejections(df, pools: List[dict], atr_val: float, cfg: dict,
                 next_seq += 1
 
     return events[-keep_last:]
+
+
+# ------------------------------------------------------------------------
+# Fast-replay support: exact tail reconstruction of detect_rejections.
+#
+# The per-step analyzer re-runs the whole prefix pass on every replay step;
+# only three of its inputs actually vary per step:
+#   1. the ATR noise gate  (min_range = min_range_atr * atr at the PREFIX tip,
+#      applied to every bar of that pass),
+#   2. the inferred point size (infer_point samples vals[0], vals[len//2],
+#      vals[-1] of the prefix),
+#   3. the liquidity-pools argument -- whose branch is INERT in the current
+#      code: `i <= p["last_time"]` compares a bar index against an epoch
+#      timestamp, so the pool scan never executes (same in detect_sweeps).
+# Everything else (level books, day extremes, engulf patterns, exp baseline)
+# is deterministic per bar. RejectionStream precomputes it once;
+# rejection_tail() rebuilds the events of any tail bar exactly as the
+# per-step pass would emit them. Keep in sync with detect_rejections.
+# ------------------------------------------------------------------------
+
+
+def _dec_exponent(v) -> int:
+    return -Decimal(str(float(v))).as_tuple().exponent
+
+
+def infer_point_by_bar(df) -> "np.ndarray":
+    """point size infer_point(df[:i+1]) would infer, for every bar i.
+
+    infer_point samples vals[0], vals[len//2], vals[-1] of each column; for a
+    prefix of length i+1 the middle sample is bar (i+1)//2. Returns a float
+    array with point_by_bar[i] == infer_point(df.iloc[:i+1]) exactly."""
+    n = len(df)
+    if n == 0:
+        return np.empty(0)
+    d0 = 0
+    D = np.zeros(n, dtype=np.int64)          # per-bar max decimals over columns
+    for col in ("open", "high", "low", "close"):
+        vals = df[col].values
+        d0 = max(d0, _dec_exponent(vals[0]))
+        col_d = np.fromiter((_dec_exponent(v) for v in vals), dtype=np.int64, count=n)
+        D = np.maximum(D, col_d)
+    out = np.empty(n, dtype=float)
+    out[0] = float(10 ** -min(max(d0, 1), 8))
+    if n > 1:
+        idx = np.arange(1, n)
+        best = np.maximum(d0, np.maximum(D[(idx + 1) // 2], D[idx]))
+        # map the few distinct exponent values through the exact int power
+        cache = {int(b): float(10 ** -min(max(int(b), 1), 8)) for b in np.unique(best)}
+        out[1:] = [cache[int(b)] for b in best]
+    return out
+
+
+class RejectionStream:
+    """detect_rejections' pool-independent per-bar state, streamed once for a
+    given point size. Paired with rejection_tail() for exact per-step events."""
+
+    def __init__(self, df, cfg: dict, point: float):
+        rj = (cfg.get("rejection") or {})
+        self.point = float(point)
+        self.avg_body_bars = max(0, int(rj.get("avg_body_bars", 20)))
+        self.agrade_max_exp = int(rj.get("mom_exp_tenths", 20))
+        self.momentum_min_exp = int(rj.get("big_exp_tenths", 30))
+        self.weak_close = int(rj.get("weak_close_pct", 50))
+        self.min_range_atr = float(rj.get("min_range_atr", 0.05))
+        self.use_day = bool(rj.get("use_day_extremes", True))
+        self.n_swing = max(1, int(cfg.get("swing_lookback", 3)))
+
+        o = df["open"].values
+        h = df["high"].values
+        l = df["low"].values
+        c = df["close"].values
+        times = df["time"].values
+        n = len(df)
+        self.o, self.h, self.l, self.c, self.times = o, h, l, c, times
+        self.n = n
+
+        # integer-point anatomy (same half-up rule as pts())
+        self.hp = np.floor(h / self.point + 0.5).astype(np.int64)
+        self.lp = np.floor(l / self.point + 0.5).astype(np.int64)
+        self.cp = np.floor(c / self.point + 0.5).astype(np.int64)
+        self.op = np.floor(o / self.point + 0.5).astype(np.int64)
+        self.body_pts = np.abs(self.cp - self.op)
+        self.rng_pts = self.hp - self.lp
+        self.rng_f = h - l
+
+        # exp10 per bar: body vs mean body of the prior avg_body_bars bars
+        self.exp10 = np.zeros(n, dtype=np.int64)
+        if self.avg_body_bars > 0 and n > 1:
+            idx = np.arange(n)
+            lo = np.maximum(0, idx - self.avg_body_bars)
+            cnt = idx - lo
+            cum = np.concatenate(([0], np.cumsum(self.body_pts)))
+            sum_body = cum[idx] - cum[lo]
+            ok = (cnt > 0) & (sum_body > 0)
+            vals = np.zeros(n, dtype=float)
+            vals[ok] = np.floor(10.0 * self.body_pts[ok] * cnt[ok] / sum_body[ok] + 0.5)
+            self.exp10 = vals.astype(np.int64)
+
+        # ungated engulf patterns (the ATR gate is applied per step)
+        self.eng = np.zeros(n, dtype=np.int8)
+        self.defs = np.zeros(n, dtype=np.int8)
+        for i in range(1, n):
+            e, d = _engulf(i, o, h, l, c, self.point)
+            self.eng[i] = e
+            self.defs[i] = d
+
+        # per-bar book-sweep records (gated by rng_pts > 0, as in the pass)
+        # and pre-fold day-extreme state (evaluation references it)
+        self.book_swept: List[tuple] = [()] * n
+        self.day_hi = np.full(n, float("nan"))
+        self.day_lo = np.full(n, float("nan"))
+        self.day_has = np.zeros(n, dtype=bool)
+        self.day_stamp = np.zeros(n, dtype=np.int64)
+
+        live_highs: list = []
+        live_lows: list = []
+        next_seq = 0
+        if n:
+            day_stamp = int(times[0]) // 86400
+            day_high, day_low, day_has = float(h[0]), float(l[0]), True
+            self.day_hi[0], self.day_lo[0] = day_high, day_low
+            self.day_has[0], self.day_stamp[0] = day_has, day_stamp
+        for i in range(1, n):
+            self.day_hi[i], self.day_lo[i] = day_high, day_low
+            self.day_has[i], self.day_stamp[i] = day_has, day_stamp
+            rec: list = []
+            if self.rng_pts[i] > 0:
+                k0 = bisect.bisect_right(live_highs, [c[i], _BIG])
+                k1 = bisect.bisect_left(live_highs, [h[i], -1.0])
+                for e in live_highs[k0:k1]:
+                    rec.append((e[1], "buyside", "swing_high", e[0]))
+                k0 = bisect.bisect_right(live_lows, [l[i], _BIG])
+                k1 = bisect.bisect_left(live_lows, [c[i], -1.0])
+                for e in live_lows[k0:k1]:
+                    rec.append((e[1], "sellside", "swing_low", e[0]))
+            self.book_swept[i] = tuple(rec)
+            # fold day extremes AFTER evaluation (ProcessBar order)
+            if self.use_day:
+                stamp = int(times[i]) // 86400
+                if stamp != day_stamp:
+                    day_stamp, day_has = stamp, False
+                if not day_has:
+                    day_high, day_low, day_has = float(h[i]), float(l[i]), True
+                else:
+                    if h[i] > day_high:
+                        day_high = float(h[i])
+                    if l[i] < day_low:
+                        day_low = float(l[i])
+            # body-close through a level breaks it for later bars
+            k = bisect.bisect_left(live_highs, [c[i], -1.0])
+            if k:
+                del live_highs[:k]
+            k = bisect.bisect_right(live_lows, [c[i], _BIG])
+            if k < len(live_lows):
+                del live_lows[k:]
+            # pivots confirmed by this bar join for later bars
+            p = i - self.n_swing
+            if p - self.n_swing >= 0:
+                phv = h[p]
+                plv = l[p]
+                is_high = True
+                is_low = True
+                for k2 in range(1, self.n_swing + 1):
+                    if h[p - k2] > phv or h[p + k2] >= phv:
+                        is_high = False
+                    if l[p - k2] < plv or l[p + k2] <= plv:
+                        is_low = False
+                    if not (is_high or is_low):
+                        break
+                if is_high:
+                    bisect.insort(live_highs, [phv, next_seq])
+                    next_seq += 1
+                if is_low:
+                    bisect.insort(live_lows, [plv, next_seq])
+                    next_seq += 1
+
+
+def rejection_tail(st: RejectionStream, i: int, atr_val: float, window: int) -> List[dict]:
+    """Rejection events for bars [i-window, i], exactly as detect_rejections
+    (df[:i+1], pools, atr_val, cfg) would emit them for those bars. The pool
+    branch is inert (see the module note), so pools are not needed here."""
+    min_range = st.min_range_atr * (atr_val or 0.0)
+    o, h, l, c, times = st.o, st.h, st.l, st.c, st.times
+    hp, lp, cp = st.hp, st.lp, st.cp
+    body_pts, rng_pts, rng_f, exp10 = st.body_pts, st.rng_pts, st.rng_f, st.exp10
+    point = st.point
+    events: List[dict] = []
+    for k in range(max(1, i - max(0, int(window))), min(i, st.n - 1) + 1):
+        rpts = int(rng_pts[k])
+        eng_k = int(st.eng[k])
+        if not (rng_f[k] >= min_range and rpts > 0):
+            eng_k = 0
+        if eng_k == 0:
+            continue
+        swept = list(st.book_swept[k])
+        if st.use_day and st.day_has[k] and st.day_stamp[k] == int(times[k]) // 86400:
+            if h[k] > st.day_hi[k] and c[k] < st.day_hi[k]:
+                swept.append((500_000_000, "buyside", "day_high", st.day_hi[k]))
+            if l[k] < st.day_lo[k] and c[k] > st.day_lo[k]:
+                swept.append((500_000_001, "sellside", "day_low", st.day_lo[k]))
+        if not swept:
+            continue
+        swept.sort()
+        clv_pct = _half_up(100.0 * ((int(cp[k]) - int(lp[k])) if eng_k > 0
+                                    else (int(hp[k]) - int(cp[k]))) / rpts)
+        br_pct = _half_up(100.0 * int(body_pts[k]) / rpts)
+        depth = max(
+            _half_up(100.0 * ((int(hp[k]) - _half_up(lvl / point)) if side == "buyside"
+                              else (_half_up(lvl / point) - int(lp[k]))) / rpts)
+            for _sq, side, _kind, lvl in swept)
+        exp_k = int(exp10[k])
+        have_exp = st.avg_body_bars > 0 and exp_k > 0
+        if have_exp and st.momentum_min_exp > 0 and exp_k >= st.momentum_min_exp:
+            bucket = 1
+        elif have_exp and exp_k < st.agrade_max_exp and clv_pct < st.weak_close:
+            bucket = 0
+        else:
+            bucket = 2
+        events.append({
+            "index": int(k), "time": int(times[k]),
+            "direction": "bull" if eng_k > 0 else "bear",
+            "defs": int(st.defs[k]), "bucket": bucket,
+            "exp": exp_k / 10.0 if have_exp else None,
+            "clv": clv_pct, "br": br_pct, "depth": depth,
+            "swept": [{"side": side, "kind": kind, "level": float(lvl)}
+                      for _sq, side, kind, lvl in swept],
+            "open": float(o[k]), "high": float(h[k]),
+            "low": float(l[k]), "close": float(c[k]),
+        })
+    return events

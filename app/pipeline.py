@@ -508,8 +508,16 @@ def _replay_symbol(symbol: str, tfs: list, store, cfg: dict,
                    warmup: int, horizon: int, step: int) -> dict:
     """Replay one symbol's history: build setups per step, label outcomes,
     collect feature rows. Module-level so ProcessPoolExecutor can pickle it
-    (tier-parallel replay). Returns rows/labels/replay_ids/made/skip_msgs."""
+    (tier-parallel replay). Returns rows/labels/replay_ids/made/skip_msgs.
+
+    ai.ml.fast_replay (default true): the SMC context is computed once per
+    full series (FastSMC) and assembled per step by index filters (~60x
+    faster, bit-identical training rows -- see smc/fast_context.py).
+    Set false for the exact per-step-analyzer path (slow).
+    """
     from .engine.labeler import label_setup
+
+    fast_replay = bool(cfg.get("ai", {}).get("ml", {}).get("fast_replay", True))
 
     rows, labels, rids = [], [], set()
     history_by_pair: dict = {}
@@ -529,16 +537,38 @@ def _replay_symbol(symbol: str, tfs: list, store, cfg: dict,
         history = history_by_pair.setdefault((symbol, tf), [])
         df_cache: dict = {}     # (symbol, htf) -> full HTF frame
         ctx_cache: dict = {}    # (symbol, htf) last closed HTF bar -> ctx
+        fast = None
+        fast_htf = None
+        if fast_replay:
+            try:
+                from .smc.fast_context import FastSMC, FastHTFContext
+                fast = FastSMC(df, cfg["smc"])
+                if mtf_on:
+                    fast_htf = FastHTFContext(symbol, tf, cfg, load_df=store.load_candles)
+            except Exception as e:
+                fast = None
+                fast_htf = None
+                skip_msgs.append(f"  [warn] {symbol} {tf}: fast replay unavailable "
+                                 f"({e}) -- using per-step analyzer")
         made[tf] = 0
         for i in range(warmup, n - horizon - 1, step):
             sub = df.iloc[:i + 1].reset_index(drop=True)
             try:
-                smc = smc_mod.analyze(sub, cfg["smc"])
-                htf_ctx = build_htf_context(symbol, tf, cfg,
-                                            up_to_time=int(sub["time"].iat[-1]),
-                                            load_df=store.load_candles,
-                                            df_cache=df_cache,
-                                            ctx_cache=ctx_cache) if mtf_on else {}
+                if fast is not None:
+                    smc = fast.at(i)
+                else:
+                    smc = smc_mod.analyze(sub, cfg["smc"])
+                if mtf_on:
+                    if fast_htf is not None:
+                        htf_ctx = fast_htf.at(int(sub["time"].iat[-1]))
+                    else:
+                        htf_ctx = build_htf_context(symbol, tf, cfg,
+                                                    up_to_time=int(sub["time"].iat[-1]),
+                                                    load_df=store.load_candles,
+                                                    df_cache=df_cache,
+                                                    ctx_cache=ctx_cache)
+                else:
+                    htf_ctx = {}
                 setups = build_setups(symbol, tf, sub, smc, cfg["smc"],
                                       htf_ctx=htf_ctx,
                                       mtf_cfg=cfg.get("mtf", {}))

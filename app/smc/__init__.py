@@ -5,8 +5,8 @@ import pandas as pd
 from .structure import find_swings, detect_structure
 from .liquidity import cluster_equal_levels, detect_sweeps
 from .pd_zones import compute_dealing_range
-from .order_blocks import find_order_blocks
-from .fvg import find_fvgs
+from .order_blocks import find_order_blocks, ob_view
+from .fvg import find_fvgs, fvg_view
 from .rejection import detect_rejections, detect_pivots
 
 
@@ -29,8 +29,10 @@ def analyze(df: pd.DataFrame, cfg: dict) -> dict:
              + cluster_equal_levels(swings, "sellside", tol))
     sweeps = detect_sweeps(df, swings, pools)
     dealing_range = compute_dealing_range(df, swings)
-    obs = find_order_blocks(df, events, int(cfg.get("ob_max_age_bars", 300)))
-    fvgs = find_fvgs(df, int(cfg.get("fvg_max_age_bars", 200)))
+    n = len(df)
+    obs = ob_view(find_order_blocks(df, events, int(cfg.get("ob_max_age_bars", 300))),
+                  n - 1, int(cfg.get("ob_max_age_bars", 300)))
+    fvgs = fvg_view(find_fvgs(df), n - 1, int(cfg.get("fvg_max_age_bars", 200)))
     atr_val = atr(df, int(cfg.get("atr_period", 14)))
     rejections = detect_rejections(df, pools, atr_val, cfg)
     swing_pivots = detect_pivots(df, lookback)   # EA IfPivotAdd book (chart dots)
