@@ -122,10 +122,12 @@ def cmd_analyze(cfg, args):
 
 def cmd_train(cfg, args):
     syms = _symbols_for(cfg, args, mt5=None)
-    print(f"training on {len(syms)} symbols")
+    print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] training on {len(syms)} symbols "
+          f"(status prints every 30s; per-symbol progress as each finishes)", flush=True)
     pipeline.train(cfg, symbols=syms,
                    save_baseline=bool(getattr(args, "baseline", False)),
                    compare=bool(getattr(args, "compare", False)))
+    print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] training finished", flush=True)
 
 
 def cmd_serve(cfg, args):

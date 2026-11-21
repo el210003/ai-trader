@@ -1,19 +1,39 @@
 """SQLite persistence for OHLCV candles and analysis snapshots."""
+import functools
 import json
 import sqlite3
+import threading
 from pathlib import Path
 
 import pandas as pd
 
 
+def _locked(fn):
+    """Serialize access to the shared sqlite connection across threads.
+
+    FastAPI runs sync endpoints in a threadpool, so Store methods can run
+    concurrently on ONE connection object; interleaved execute/commit on a
+    single sqlite3 connection raises ``InterfaceError: bad parameter or
+    other API misuse``. The RLock keeps execute+commit sequences atomic and
+    stays re-entrant for internal calls (append_setups -> _backfill_identities).
+    """
+    @functools.wraps(fn)
+    def wrapper(self, *args, **kwargs):
+        with self._lock:
+            return fn(self, *args, **kwargs)
+    return wrapper
+
+
 class Store:
     def __init__(self, path: str):
         self.path = path
+        self._lock = threading.RLock()
         Path(path).parent.mkdir(parents=True, exist_ok=True)
         self.conn = sqlite3.connect(path, check_same_thread=False, timeout=30)
         self.conn.execute("PRAGMA journal_mode=WAL")
         self._create()
 
+    @_locked
     def _create(self):
         self.conn.executescript(
             """
@@ -117,6 +137,7 @@ class Store:
         self.conn.commit()
 
     # ------------------------------------------------------------- candles
+    @_locked
     def upsert_candles(self, df: pd.DataFrame, symbol: str, tf: str):
         rows = [
             (symbol, tf, int(r.time), float(r.open), float(r.high),
@@ -128,6 +149,7 @@ class Store:
             "VALUES(?,?,?,?,?,?,?,?)", rows)
         self.conn.commit()
 
+    @_locked
     def load_candles(self, symbol: str, tf: str) -> pd.DataFrame:
         df = pd.read_sql_query(
             "SELECT time,open,high,low,close,volume FROM candles "
@@ -135,12 +157,14 @@ class Store:
             self.conn, params=(symbol, tf))
         return df
 
+    @_locked
     def candle_count(self, symbol: str, tf: str) -> int:
         cur = self.conn.execute(
             "SELECT COUNT(*) FROM candles WHERE symbol=? AND tf=?", (symbol, tf))
         return cur.fetchone()[0]
 
     # ------------------------------------------------------------ analysis
+    @_locked
     def save_analysis(self, symbol: str, tf: str, payload: dict):
         import time as _t
         self.conn.execute(
@@ -148,6 +172,7 @@ class Store:
             (symbol, tf, int(_t.time()), json.dumps(payload)))
         self.conn.commit()
 
+    @_locked
     def load_analysis(self, symbol: str, tf: str):
         cur = self.conn.execute(
             "SELECT payload,updated_at FROM analysis WHERE symbol=? AND tf=?", (symbol, tf))
@@ -156,11 +181,13 @@ class Store:
             return None
         return json.loads(row[0])
 
+    @_locked
     def list_analyses(self):
         cur = self.conn.execute("SELECT symbol,tf,updated_at FROM analysis ORDER BY symbol,tf")
         return [{"symbol": r[0], "tf": r[1], "updated_at": r[2]} for r in cur.fetchall()]
 
     # ---------------------------------------------------------------- csm
+    @_locked
     def save_csm(self, payload: dict):
         import time as _t
         self.conn.execute(
@@ -168,12 +195,14 @@ class Store:
             (int(_t.time()), json.dumps(payload)))
         self.conn.commit()
 
+    @_locked
     def load_csm(self):
         cur = self.conn.execute("SELECT payload FROM csm WHERE id = 1")
         row = cur.fetchone()
         return json.loads(row[0]) if row else None
 
     # ------------------------------------------------------ setups history
+    @_locked
     def append_setups(self, symbol: str, tf: str, setups: list, logged_at: int):
         """Journal setups for forward-validation.
 
@@ -228,6 +257,7 @@ class Store:
         self._backfill_identities()
         return len(inserts)
 
+    @_locked
     def _backfill_identities(self):
         """One-time backfill of identity/first_formed_at for pre-existing rows
         that predate the identity columns (old dedup used formed_at)."""
@@ -249,6 +279,7 @@ class Store:
         except Exception:
             pass
 
+    @_locked
     def load_setups_history(self, symbol: str = None, tf: str = None,
                             limit: int = 200) -> list:
         q = ("SELECT h.id,h.symbol,h.tf,h.logged_at,h.formed_at,h.direction,h.verdict,h.score,"
@@ -269,6 +300,7 @@ class Store:
         cols = [d[0] for d in cur.description]
         return [dict(zip(cols, r)) for r in cur.fetchall()]
 
+    @_locked
     def outcome_stats(self, symbol: str = None, tf: str = None) -> dict:
         """Journal strip summary over RESOLVED outcomes (win rate, expectancy,
         fill rate, open count) plus log counts. Full aggregates live in
@@ -293,6 +325,7 @@ class Store:
         }
 
     # ------------------------------------------------------------ outcomes
+    @_locked
     def save_outcome(self, o: dict):
         self.conn.execute(
             "INSERT OR REPLACE INTO outcomes(setup_id,symbol,tf,direction,resolved_at,"
@@ -304,6 +337,7 @@ class Store:
              o.get("mae_r"), o.get("bars_to_outcome"), o.get("post_loss_tp_hit")))
         self.conn.commit()
 
+    @_locked
     def pending_setups(self, lookback_days: int = 30) -> list:
         """Journaled setups without a resolved outcome, newest first."""
         import time as _t
@@ -319,6 +353,7 @@ class Store:
                 "ml_prob", "payload"]
         return [dict(zip(cols, r)) for r in cur.fetchall()]
 
+    @_locked
     def load_outcome_rows(self, symbol: str = None, tf: str = None,
                           limit: int = 20000) -> list:
         """Resolved setups joined with their outcomes (for aggregation)."""
@@ -344,6 +379,7 @@ class Store:
                 "mfe_r", "mae_r", "bars_to_outcome", "resolved_at", "post_loss_tp_hit"]
         return [dict(zip(cols, r)) for r in cur.fetchall()]
 
+    @_locked
     def outcome_history_for_symbol(self, symbol: str, limit: int = 500) -> list:
         """Resolved WIN/LOSS outcomes for one symbol, oldest first — feeds the
         live per-symbol dynamic features (rolling win rate, realized RR)."""
@@ -356,6 +392,7 @@ class Store:
                 for r in cur.fetchall()]
 
     # ---------------------------------------------------------- trade log
+    @_locked
     def record_trade(self, t: dict):
         """Append one execution attempt to the trades log."""
         self.conn.execute(
@@ -372,6 +409,7 @@ class Store:
              int(t.get("placed_at") or 0), t.get("payload")))
         self.conn.commit()
 
+    @_locked
     def trade_attempted(self, identity: str) -> bool:
         """True when this setup identity was already executed/attempted at
         least once (dry-run, live, or rejected). Transient skips are never
@@ -381,6 +419,7 @@ class Store:
             "('filled','placed','dry_run','rejected','error') LIMIT 1", (identity,))
         return cur.fetchone() is not None
 
+    @_locked
     def last_trade_time(self, symbol: str, direction: str = None,
                         statuses=('filled', 'placed', 'dry_run')):
         """Most recent execution time for a symbol (+direction), or None."""
@@ -394,6 +433,7 @@ class Store:
         row = cur.fetchone()
         return row[0] if row and row[0] else None
 
+    @_locked
     def trades_today(self, statuses=('filled', 'placed', 'dry_run')) -> int:
         """Count executions since local midnight (daily cap check)."""
         import time as _t
@@ -404,6 +444,7 @@ class Store:
         cur = self.conn.execute(q, (midnight, *statuses))
         return cur.fetchone()[0]
 
+    @_locked
     def load_trades(self, limit: int = 100, symbol: str = None) -> list:
         q = ("SELECT id,identity,symbol,tf,direction,verdict,score,ml_prob,entry,"
              "stop_loss,take_profit,rr,order_type,lot,requested_price,fill_price,"
@@ -418,6 +459,7 @@ class Store:
         cols = [d[0] for d in cur.description]
         return [dict(zip(cols, r)) for r in cur.fetchall()]
 
+    @_locked
     def execution_stats(self) -> dict:
         from collections import Counter
         rows = self.load_trades(limit=100000)
@@ -431,6 +473,7 @@ class Store:
             "symbols": dict(Counter(r["symbol"] for r in rows)),
         }
 
+    @_locked
     def live_training_samples(self) -> list:
         """Resolved live outcomes with their journaled features — tier-3
         training blend. WIN -> 1, LOSS -> 0 (labeler semantics)."""
@@ -452,5 +495,6 @@ class Store:
                         "label": 1 if result == "WIN" else 0})
         return out
 
+    @_locked
     def close(self):
         self.conn.close()

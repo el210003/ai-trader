@@ -3,7 +3,7 @@ import json
 import os
 import threading
 import time
-from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
+from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 from . import smc as smc_mod
@@ -581,6 +581,31 @@ def _replay_worker(payload):
         store.close()
 
 
+def _start_heartbeat(get_status, interval: float = 30.0):
+    """Print a '[HH:MM:SS] still running ...' line every `interval` seconds
+    so long silent phases (symbol replay, model fit/CV) visibly stay alive
+    on the console instead of looking frozen. Returns a stop() callable."""
+    t0 = time.time()
+    stop_evt = threading.Event()
+
+    def _beat():
+        while not stop_evt.wait(interval):
+            try:
+                status = get_status()
+            except Exception:
+                status = ""
+            print(f"  [{time.strftime('%H:%M:%S')}] still running: "
+                  f"{time.time() - t0:.0f}s elapsed{status}", flush=True)
+
+    th = threading.Thread(target=_beat, daemon=True)
+    th.start()
+
+    def stop():
+        stop_evt.set()
+        th.join(timeout=2)
+    return stop
+
+
 def train(cfg: dict, store: Store = None, demo: bool = False,
           symbols: list = None, save_baseline: bool = False,
           compare: bool = False, verbose: bool = True) -> dict:
@@ -608,25 +633,34 @@ def train(cfg: dict, store: Store = None, demo: bool = False,
     parallel = bool(ml_cfg.get("parallel", True)) and len(sym_list) > 1
     workers = int(ml_cfg.get("workers") or 0)
     t_replay = time.time()
+    total_syms = len(sym_list)
+    sym_done = [0]
+    stop_hb = (_start_heartbeat(
+        lambda: f" | replay {sym_done[0]}/{total_syms} symbols done")
+        if verbose else None)
     if parallel:
         import os as _os
-        from concurrent.futures import ProcessPoolExecutor
         n_workers = workers if workers > 0 else max(1, min((_os.cpu_count() or 2) - 1, 8))
         if verbose:
-            print(f"  replaying {len(sym_list)} symbols on {n_workers} workers...")
+            print(f"  replaying {total_syms} symbols on {n_workers} workers...", flush=True)
         try:
             payloads = [(sym, list(cfg["timeframes"]), cfg["storage"]["path"], cfg,
                          warmup, horizon, step) for sym in sym_list]
             with ProcessPoolExecutor(max_workers=n_workers) as ex:
-                for res in ex.map(_replay_worker, payloads):
+                futures = [ex.submit(_replay_worker, p) for p in payloads]
+                for fut in as_completed(futures):
+                    res = fut.result()
+                    sym_done[0] += 1
                     rows.extend(res["rows"])
                     labels.extend(res["labels"])
                     replay_ids.update(res["replay_ids"])
                     if verbose:
+                        el = time.time() - t_replay
                         for msg in res["skip_msgs"]:
                             print(msg)
                         for tf, m in res["made"].items():
-                            print(f"  {res['symbol']} {tf}: {m} labeled setups")
+                            print(f"  [{sym_done[0]}/{total_syms}] {res['symbol']} {tf}: "
+                                  f"{m} labeled setups ({el:.0f}s elapsed)", flush=True)
         except Exception as e:
             if verbose:
                 print(f"  [warn] parallel replay failed ({e}) -- falling back to serial")
@@ -635,6 +669,7 @@ def train(cfg: dict, store: Store = None, demo: bool = False,
         for symbol in sym_list:
             res = _replay_symbol(symbol, list(cfg["timeframes"]), store, cfg,
                                  warmup, horizon, step)
+            sym_done[0] += 1
             rows.extend(res["rows"])
             labels.extend(res["labels"])
             replay_ids.update(res["replay_ids"])
@@ -642,9 +677,12 @@ def train(cfg: dict, store: Store = None, demo: bool = False,
                 for msg in res["skip_msgs"]:
                     print(msg)
                 for tf, m in res["made"].items():
-                    print(f"  {symbol} {tf}: {m} labeled setups")
+                    print(f"  [{sym_done[0]}/{total_syms}] {symbol} {tf}: "
+                          f"{m} labeled setups", flush=True)
+    if stop_hb:
+        stop_hb()
     if verbose:
-        print(f"  replay done: {len(rows)} samples in {time.time() - t_replay:.1f}s")
+        print(f"  replay done: {len(rows)} samples in {time.time() - t_replay:.1f}s", flush=True)
 
     if not rows:
         raise RuntimeError("no labeled setups generated")
@@ -671,8 +709,21 @@ def train(cfg: dict, store: Store = None, demo: bool = False,
     ml = SetupML(ml_cfg["model_path"])
     backend = str(ml_cfg.get("backend", "sklearn"))
     all_rows, all_labels = rows + live_rows, labels + live_labels
-    metrics = ml.train(all_rows, all_labels, min_samples=int(ml_cfg["min_train_samples"]),
-                       backend=backend)
+    if verbose:
+        print(f"  training {backend} model on {len(all_rows)} samples "
+              f"(fit + importance + cross-validation, may take a while)...", flush=True)
+    t_fit = time.time()
+    stop_hb = (_start_heartbeat(
+        lambda: f" | fitting {backend} model on {len(all_rows)} samples")
+        if verbose else None)
+    try:
+        metrics = ml.train(all_rows, all_labels, min_samples=int(ml_cfg["min_train_samples"]),
+                           backend=backend)
+    finally:
+        if stop_hb:
+            stop_hb()
+    if verbose:
+        print(f"  model trained in {time.time() - t_fit:.1f}s")
     if live_rows:
         metrics["n_live"] = len(live_rows)
         # keep the better of blended vs replay-only by cv_auc
@@ -692,7 +743,13 @@ def train(cfg: dict, store: Store = None, demo: bool = False,
                 if verbose:
                     print(f"  [live-blend] replay-only cv_auc {auc0:.3f} beats blended "
                           f"{metrics['cv_auc']:.3f} -- retraining on replay only")
-                metrics = ml.train(rows, labels, min_samples=int(ml_cfg["min_train_samples"]), backend=backend)
+                print(f"  retraining {backend} model on {len(rows)} replay-only samples...", flush=True)
+                stop_hb2 = _start_heartbeat(
+                    lambda: f" | fitting {backend} replay-only model on {len(rows)} samples")
+                try:
+                    metrics = ml.train(rows, labels, min_samples=int(ml_cfg["min_train_samples"]), backend=backend)
+                finally:
+                    stop_hb2()
                 metrics["n_live"] = 0
                 metrics["cv_auc_replay_only"] = round(auc0, 3)
         except Exception:
