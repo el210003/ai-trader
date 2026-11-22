@@ -25,6 +25,7 @@ import pandas as pd
 
 from .structure import find_swings, detect_structure
 from .liquidity import cluster_equal_levels, detect_sweeps
+from .pd_zones import compute_dealing_range
 from .order_blocks import find_order_blocks, ob_view
 from .fvg import find_fvgs, fvg_view
 from .rejection import RejectionStream, rejection_tail, infer_point_by_bar
@@ -130,34 +131,7 @@ class FastSMC:
         else:
             rej_i = []
 
-        # dealing range from the most recent confirmed swings (as of i)
-        last_high = last_low = None
-        for sw in swings_i:
-            if sw["type"] == "high":
-                last_high = sw
-            else:
-                last_low = sw
-        if last_high is None or last_low is None:      # fallback: rolling extremes
-            win = min(i + 1, 200)
-            seg = df.iloc[i + 1 - win:i + 1]
-            top, bottom = float(seg["high"].max()), float(seg["low"].min())
-            hi_t = lo_t = int(seg["time"].iloc[-1])
-            hi_i = lo_i = i
-        else:
-            top, bottom = last_high["price"], last_low["price"]
-            hi_t, hi_i = last_high["time"], last_high["index"]
-            lo_t, lo_i = last_low["time"], last_low["index"]
-            if bottom > top:                            # defensive swap
-                top, bottom = bottom, top
-                hi_t, hi_i, lo_t, lo_i = lo_t, lo_i, hi_t, hi_i
-        eq = (top + bottom) / 2.0
-        span = top - bottom
-        position = (close_i - bottom) / span if span > 0 else 0.5
-        zone = "premium" if position > 0.5 else ("discount" if position < 0.5 else "equilibrium")
-        dr = {"top": top, "bottom": bottom, "equilibrium": eq,
-              "high_time": int(hi_t), "low_time": int(lo_t),
-              "high_index": int(hi_i), "low_index": int(lo_i),
-              "position": float(min(max(position, 0.0), 1.0)), "zone": zone}
+        dr = compute_dealing_range(df, swings_i, events=events_i, end_idx=i)
 
         return {
             "trend": trend_i,

@@ -496,6 +496,55 @@ def test_htf_tp_distance_atr_units():
     print("htf_tp_distance_atr units & feature keys OK")
 
 
+def test_dealing_range_impulse_leg_and_fast_parity():
+    """compute_dealing_range anchors to the active impulse leg [impulse_low, running_high]
+    after a bullish BOS so a pullback sits in discount rather than 100% premium, and
+    matches FastSMC.at(i) bit-for-bit."""
+    from app.smc.fast_context import FastSMC
+
+    t0 = 1_700_000_000
+    rows = []
+    # 0..3: range before initial swing high at index 4 (1.1020)
+    base = [
+        (1.1000, 1.1005, 1.0995, 1.1002),
+        (1.1002, 1.1008, 1.0998, 1.1004),
+        (1.1004, 1.1010, 1.1000, 1.1006),
+        (1.1006, 1.1014, 1.1002, 1.1010),
+        (1.1010, 1.1020, 1.1008, 1.1012),  # idx 4: swing high 1.1020 (confirmed at 7)
+        (1.1012, 1.1013, 1.1000, 1.1002),
+        (1.1002, 1.1005, 1.0992, 1.0995),
+        (1.0995, 1.0998, 1.0988, 1.0990),
+        (1.0990, 1.0992, 1.0980, 1.0985),  # idx 8: swing low 1.0980 (confirmed at 11)
+        (1.0985, 1.0996, 1.0984, 1.0994),
+        (1.0994, 1.1008, 1.0992, 1.1006),
+        (1.1006, 1.1018, 1.1004, 1.1016),
+        # idx 12: bullish BOS close above 1.1020 -> surges to 1.1100
+        (1.1016, 1.1100, 1.1015, 1.1090),
+        # idx 13: pullback into lower half of [1.0980, 1.1100] (eq = 1.1040) -> close 1.1025 (discount!)
+        (1.1090, 1.1092, 1.1020, 1.1025),
+    ]
+    for i, (o, h, l, c) in enumerate(base):
+        rows.append((t0 + i * 900, o, h, l, c))
+    df = mkdf(rows)
+
+    smc = analyze(df, CFG)
+    dr = smc["dealing_range"]
+    assert abs(dr["bottom"] - 1.0980) < 1e-9, dr
+    assert abs(dr["top"] - 1.1100) < 1e-9, dr
+    assert abs(dr["equilibrium"] - 1.1040) < 1e-9, dr
+    assert dr["zone"] == "discount" and dr["position"] < 0.5, dr
+
+    fast = FastSMC(df, CFG)
+    for idx in range(7, len(df)):
+        sub = df.iloc[:idx + 1].reset_index(drop=True)
+        ref = analyze(sub, CFG)
+        got = fast.at(idx)
+        assert got["dealing_range"] == ref["dealing_range"], (
+            f"FastSMC dealing_range mismatch at {idx}: got={got['dealing_range']} vs ref={ref['dealing_range']}"
+        )
+    print("dealing range impulse leg & FastSMC parity OK")
+
+
 if __name__ == "__main__":
     test_detector_fires_on_sweep_engulf()
     test_zone_setups_still_flow()
@@ -511,4 +560,5 @@ if __name__ == "__main__":
     test_structure_independent_active_swings()
     test_skip_already_tested_uses_left_at_and_falls_back()
     test_htf_tp_distance_atr_units()
+    test_dealing_range_impulse_leg_and_fast_parity()
     print("ALL SMOKE TESTS PASSED")

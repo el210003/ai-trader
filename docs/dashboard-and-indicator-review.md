@@ -142,8 +142,9 @@ Issues are grouped by **Indicator / SMC / Setup Logic** and **Dashboard Backend 
 
 ---
 
-### 5. [Medium] `compute_dealing_range` Uses Inverted / Stale Swing Brackets Instead of the Active Impulse Leg
-- **Where:** `app/smc/pd_zones.py:5-47` (`compute_dealing_range`), `app/smc/__init__.py:33`, `app/smc/fast_context.py:124-150`
+### 5. [Medium] ~~`compute_dealing_range` Uses Inverted / Stale Swing Brackets Instead of the Active Impulse Leg~~ *(Fixed)*
+- **Status:** Implemented & verified (`scripts/smoke_rejection.py` — `test_dealing_range_impulse_leg_and_fast_parity`)
+- **Where:** `app/smc/pd_zones.py:5-115` (`compute_dealing_range`), `app/smc/__init__.py:33`, `app/smc/fast_context.py:125`
 - **What happens:**
   - `compute_dealing_range(df, swings)` pairs the latest confirmed swing high and latest confirmed swing low independently and swaps `top`/`bottom` if `bottom > top` (`app/smc/pd_zones.py:30-33`).
   - In sustained trends, one side can be stale or inverted (e.g., after a bullish BOS breaks above a prior swing high, no new swing high has confirmed yet, so `last_high` is still the *broken* old high while `last_low` is a higher low — or worse, `last_high` is older and below `last_low`). Clamping `position` to `[0.0, 1.0]` labels a bullish breakout trading above the old swing high as `100% premium`, which fails `correct_half = mid <= rng["equilibrium"]` in `build_setups` (`app/engine/setup_builder.py:310`) and blocks trend-continuation long entries.

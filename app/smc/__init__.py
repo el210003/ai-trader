@@ -31,7 +31,7 @@ def analyze(df: pd.DataFrame, cfg: dict) -> dict:
              + cluster_equal_levels(confirmed_swings, "sellside", tol))
     use_day_extremes = bool((cfg.get("rejection") or {}).get("use_day_extremes", True))
     sweeps = detect_sweeps(df, swings, pools, tol_pct=tol_pct, use_day_extremes=use_day_extremes)
-    dealing_range = compute_dealing_range(df, swings)
+    dealing_range = compute_dealing_range(df, swings, events=events)
     n = len(df)
     obs = ob_view(find_order_blocks(df, events, int(cfg.get("ob_max_age_bars", 300))),
                   n - 1, int(cfg.get("ob_max_age_bars", 300)))
