@@ -257,8 +257,9 @@ Issues are grouped by **Indicator / SMC / Setup Logic** and **Dashboard Backend 
 
 ## Part 2 — Dashboard Backend & Frontend Issues
 
-### 9. [High] `NameError: name 'mt5' is not defined` Breaks `/api/csm` Self-Heal Refresh
-- **Where:** `app/dashboard/server.py:422-434` (`csm_data` -> `_csm_work`)
+### 9. [High] ~~`NameError: name 'mt5' is not defined` Breaks `/api/csm` Self-Heal Refresh~~ *(Fixed)*
+- **Status:** Implemented & verified (`scripts/smoke_rejection.py` — `test_csm_endpoint_self_heal_no_nameerror`; note: Item 10 will upgrade this to `mt5_client.mt5_session` once introduced)
+- **Where:** `app/dashboard/server.py:420-436` (`csm_data` -> `_csm_work`)
 - **What happens:**
   - Inside `csm_data()` -> `_csm_work()`, `pipeline.update_csm(cfg, store, mt5=mt5, demo=demo_mode)` references an undefined variable `mt5` (which only exists in `_bar_watcher`'s local scope at `app/dashboard/server.py:85`).
   - Every time the CSM snapshot exceeds `max_age` when `_bar_watcher` or `auto_run` is inactive, `_csm_work()` immediately raises `NameError: name 'mt5' is not defined`, which is silently swallowed by `except Exception: pass`. As a result, `/api/csm` never self-heals stale CSM data.

@@ -635,6 +635,68 @@ def test_csm_trailing_bar_alignment():
     print("CSM trailing-bar misalignment guard OK")
 
 
+def test_csm_endpoint_self_heal_no_nameerror():
+    """GET /api/csm self-heal worker connects a local MT5 handle instead of
+    referencing an undefined `mt5` variable, and passes it to update_csm."""
+    import tempfile
+    import time
+    from unittest.mock import patch
+    from fastapi.testclient import TestClient
+    from app.dashboard.server import create_app
+    from app import pipeline
+    from app.data import mt5_client
+
+    tmpdir = tempfile.mkdtemp()
+    try:
+        cfg = {
+            "symbols": ["EURUSD"],
+            "timeframes": ["M15"],
+            "mt5": {},
+            "smc": CFG,
+            "csm": {"enabled": True, "min_interval_seconds": 30},
+            "ai": {"ml": {"model_path": f"{tmpdir}/missing.joblib"}, "llm": {"enabled": False}},
+            "storage": {"path": f"{tmpdir}/test.db"},
+            "dashboard": {"bar_close_watcher": False, "auto_run_interval": 0},
+            "execution": {"enabled": False},
+            "_demo": False,
+        }
+        app = create_app(cfg)
+        sentinel_mt5 = object()
+        called = {}
+
+        def fake_connect(c):
+            called["connected"] = True
+            return sentinel_mt5
+
+        def fake_shutdown(m):
+            called["shutdown"] = m
+
+        def fake_update(c, st, mt5=None, demo=False, **kw):
+            called["mt5"] = mt5
+            called["demo"] = demo
+
+        with patch.object(mt5_client, "connect_mt5", side_effect=fake_connect), \
+             patch.object(mt5_client, "shutdown_mt5", side_effect=fake_shutdown), \
+             patch.object(pipeline, "update_csm", side_effect=fake_update):
+            client = TestClient(app)
+            resp = client.get("/api/csm")
+            assert resp.status_code == 200
+            for _ in range(50):
+                if "shutdown" in called:
+                    break
+                time.sleep(0.02)
+
+        assert called.get("connected") is True, called
+        assert called.get("mt5") is sentinel_mt5, called
+        assert called.get("demo") is False, called
+        assert called.get("shutdown") is sentinel_mt5, called
+    finally:
+        import gc, shutil
+        gc.collect()
+        shutil.rmtree(tmpdir, ignore_errors=True)
+    print("csm endpoint self-heal refresh OK")
+
+
 if __name__ == "__main__":
     test_detector_fires_on_sweep_engulf()
     test_zone_setups_still_flow()
@@ -654,4 +716,5 @@ if __name__ == "__main__":
     test_find_swings_tie_break_matches_detect_pivots()
     test_infer_point_trailing_window_and_override()
     test_csm_trailing_bar_alignment()
+    test_csm_endpoint_self_heal_no_nameerror()
     print("ALL SMOKE TESTS PASSED")

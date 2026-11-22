@@ -470,11 +470,16 @@ def create_app(cfg: dict) -> FastAPI:
         if snap is None or time.time() - snap.get("generated_at", 0) > max_age:
             if _csm_lock.acquire(blocking=False):
                 def _csm_work():
+                    _mt5 = None
                     try:
-                        pipeline.update_csm(cfg, store, mt5=mt5, demo=demo_mode)
-                    except Exception:
-                        pass
+                        if not demo_mode:
+                            _mt5 = mt5_client.connect_mt5(cfg["mt5"])
+                        pipeline.update_csm(cfg, store, mt5=_mt5, demo=demo_mode)
+                    except Exception as e:
+                        debug(f"[csm] background refresh failed: {e}")
                     finally:
+                        if _mt5 is not None:
+                            mt5_client.shutdown_mt5(_mt5)
                         _csm_lock.release()
                 threading.Thread(target=_csm_work, daemon=True).start()
         return snap or {"strength": {}, "aligned": {}, "transitions": [],
