@@ -781,7 +781,7 @@ function distLabel(entry, level){
   if (p >= 3) return (d / Math.pow(10, -(p-1))).toFixed(1) + ' pips';
   return d.toFixed(p);
 }
-function esc(s){ return String(s ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
+function esc(s){ return String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
 
 /* ------------------------------------------------------------ chart */
 function renderChart(){
@@ -877,7 +877,7 @@ function renderStructure(){
         (st.age != null ? ` · last BOS/CHoCH ${st.age} bars ago` : ' · no structure events') +
         (st.median_gap != null ? ` (typical gap ~${st.median_gap})` : '') +
         (st.zone ? ` · price in ${st.zone} half` : '');
-      return `<span class="mtf-chip ${cls}${cur}" title="${esc(tip)} — click to open this timeframe" onclick="switchTf('${tf}')">${tf} ${arr}</span>`;
+      return `<span class="mtf-chip ${cls}${cur}" data-tf="${esc(tf)}" title="${esc(tip)} — click to open this timeframe">${esc(tf)} ${arr}</span>`;
     }).join('');
     return `<div class="mtf-row"><span class="mtf-lbl">MTF</span>${rows}</div>`;
   };
@@ -1459,7 +1459,7 @@ async function loadRanked(){
       const score = row.score != null ? Math.round(row.score) : 0;
       const heat = score >= 60 ? 'hot' : score >= 45 ? 'warm' : 'cold';
       const meterCls = score >= 60 ? 'm-hot' : score >= 45 ? 'm-warm' : 'm-cold';
-      return `<div class="rank-row ${heat}" title="open ${esc(row.symbol)} ${esc(row.tf)}" onclick="gotoSetup('${esc(row.symbol)}','${esc(row.tf)}')">
+      return `<div class="rank-row ${heat}" data-symbol="${esc(row.symbol)}" data-tf="${esc(row.tf)}" title="open ${esc(row.symbol)} ${esc(row.tf)}">
         <div class="rank-medal ${medal}">${i+1}</div>
         <div class="rank-main">
           <div class="rank-line1">
@@ -1589,6 +1589,14 @@ $('symbolClear').onclick = () => { $('symbolSearch').value = ''; state.filterTex
 
 $('settingsBtn').onclick = openSettings;
 $('settingsClose').onclick = closeSettings;
+$('structureCard').addEventListener('click', (e) => {
+  const chip = e.target.closest('[data-tf]');
+  if (chip) switchTf(chip.dataset.tf);
+});
+$('rankedRows').addEventListener('click', (e) => {
+  const row = e.target.closest('.rank-row[data-symbol]');
+  if (row) gotoSetup(row.dataset.symbol, row.dataset.tf);
+});
 $('settingsModal').addEventListener('click', (e) => { if (e.target === $('settingsModal')) closeSettings(); });
 $('settingsSearch').addEventListener('input', renderSettingsList);
 $('settingsClear').onclick = () => { $('settingsSearch').value=''; renderSettingsList(); };

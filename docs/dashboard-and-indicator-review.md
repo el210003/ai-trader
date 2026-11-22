@@ -354,8 +354,9 @@ Issues are grouped by **Indicator / SMC / Setup Logic** and **Dashboard Backend 
 
 ---
 
-### 13. [Medium] HTML Attribute Injection / Broken `onclick` on Symbols With Quotes or Backslashes
-- **Where:** `app/dashboard/static/index.html:783` (`esc`), `876` (`renderStructure` MTF chip `switchTf`), `1457` (`loadRanked` row `gotoSetup`)
+### 13. [Medium] ~~HTML Attribute Injection / Broken `onclick` on Symbols With Quotes or Backslashes~~ *(Fixed)*
+- **Status:** Implemented & verified (`scripts/smoke_rejection.py` — `test_index_html_delegated_clicks_and_esc`)
+- **Where:** `app/dashboard/static/index.html:784` (`esc`), `880` (`renderStructure` MTF chip `data-tf`), `1462` (`loadRanked` row `data-symbol` / `data-tf`), `1592-1599` (delegated click listeners)
 - **What happens:**
   - `esc()` (`app/dashboard/static/index.html:783`) only escapes `& < > "` for HTML text nodes, leaving single quotes `'` and backslashes `\` unescaped.
   - Both `renderStructure()` (`onclick="switchTf('${tf}')"` at line 876) and `loadRanked()` (`onclick="gotoSetup('${esc(row.symbol)}','${esc(row.tf)}')"` at line 1457) interpolate values directly into single-quoted JS string literals inside HTML attributes. Broker symbols containing `'` or `\` (common on custom CFD/futures suffixes) cause a JS `SyntaxError` that breaks click navigation or allows attribute/JS injection.

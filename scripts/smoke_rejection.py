@@ -808,6 +808,23 @@ def test_index_html_chart_and_livetick_fixes():
     print("index.html multi-setup lines, cached utcOffset & incremental liveTick OK")
 
 
+def test_index_html_delegated_clicks_and_esc():
+    """Verify index.html escapes single quotes in esc() and uses data-* attributes
+    with delegated click listeners instead of inline onclick string interpolation."""
+    from pathlib import Path
+    html = Path("app/dashboard/static/index.html").read_text(encoding="utf-8")
+    assert "'&#39;'" in html
+    assert 'onclick="switchTf(' not in html
+    assert 'onclick="gotoSetup(' not in html
+    assert 'data-tf="${esc(tf)}"' in html
+    assert 'data-symbol="${esc(row.symbol)}" data-tf="${esc(row.tf)}"' in html
+    assert "$('structureCard').addEventListener('click'" in html
+    assert "e.target.closest('[data-tf]')" in html
+    assert "$('rankedRows').addEventListener('click'" in html
+    assert "e.target.closest('.rank-row[data-symbol]')" in html
+    print("index.html delegated click handlers & single-quote escaping OK")
+
+
 if __name__ == "__main__":
     test_detector_fires_on_sweep_engulf()
     test_zone_setups_still_flow()
@@ -831,4 +848,5 @@ if __name__ == "__main__":
     test_mt5_lock_serializes_concurrent_calls()
     test_execution_engine_dynamic_allowed_symbols()
     test_index_html_chart_and_livetick_fixes()
+    test_index_html_delegated_clicks_and_esc()
     print("ALL SMOKE TESTS PASSED")
