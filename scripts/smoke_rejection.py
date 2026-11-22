@@ -746,6 +746,53 @@ def test_mt5_lock_serializes_concurrent_calls():
     print("MT5_LOCK & mt5_session concurrency serialization OK")
 
 
+def test_execution_engine_dynamic_allowed_symbols():
+    """ExecutionEngine resolves callable allowed_symbols dynamically per scan
+    instead of freezing the startup symbol set."""
+    import tempfile
+    import time
+    from app.data.store import Store
+    from app.execution.executor import ExecutionEngine
+
+    tmpdir = tempfile.mkdtemp()
+    try:
+        store = Store(f"{tmpdir}/test.db")
+        now = int(time.time())
+        for sym in ("EURUSD", "GBPUSD"):
+            store.save_analysis(sym, "M15", {
+                "generated_at": now,
+                "setups": [{
+                    "direction": "long", "verdict": "BUY", "entry": 1.1000,
+                    "stop_loss": 1.0980, "take_profit": 1.1040, "rr": 2.0,
+                    "final_score": 85.0, "ml_prob": 0.70,
+                    "entry_zone": {"origin_time": now - 900},
+                }],
+            })
+        active_syms = ["EURUSD"]
+        cfg = {"mtf": {"entry_tf": "M15"}, "execution": {"enabled": True, "dry_run": True}}
+        eng = ExecutionEngine(cfg, store, allowed_symbols=lambda: active_syms, verbose=False)
+
+        cands1 = [s["symbol"] for s in eng._candidates(fresh_seconds=120)]
+        assert cands1 == ["EURUSD"], cands1
+
+        active_syms.append("GBPUSD")
+        cands2 = sorted(s["symbol"] for s in eng._candidates(fresh_seconds=120))
+        assert cands2 == ["EURUSD", "GBPUSD"], cands2
+
+        active_syms.remove("EURUSD")
+        cands3 = [s["symbol"] for s in eng._candidates(fresh_seconds=120)]
+        assert cands3 == ["GBPUSD"], cands3
+    finally:
+        import gc, shutil
+        try:
+            store.conn.close()
+        except Exception:
+            pass
+        gc.collect()
+        shutil.rmtree(tmpdir, ignore_errors=True)
+    print("ExecutionEngine dynamic allowed_symbols OK")
+
+
 if __name__ == "__main__":
     test_detector_fires_on_sweep_engulf()
     test_zone_setups_still_flow()
@@ -767,4 +814,5 @@ if __name__ == "__main__":
     test_csm_trailing_bar_alignment()
     test_csm_endpoint_self_heal_no_nameerror()
     test_mt5_lock_serializes_concurrent_calls()
+    test_execution_engine_dynamic_allowed_symbols()
     print("ALL SMOKE TESTS PASSED")

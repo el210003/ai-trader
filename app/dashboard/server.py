@@ -51,7 +51,7 @@ def create_app(cfg: dict) -> FastAPI:
     # ------------------------------------------------ live execution engine
     # Scans stored analyses for BUY/SELL setups and places MT5 orders
     # (respecting execution.enabled / dry_run; see docs/execution.md).
-    execution_engine = ExecutionEngine(cfg, store, allowed_symbols=visible_symbols(),
+    execution_engine = ExecutionEngine(cfg, store, allowed_symbols=visible_symbols,
                                        verbose=debug_enabled(cfg))
     if execution_engine.enabled:
         mode = "DRY-RUN" if execution_engine.dry_run else "LIVE ORDERS"

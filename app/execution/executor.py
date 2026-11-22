@@ -53,7 +53,8 @@ class ExecutionEngine:
         self._apply_overrides()           # UI/CLI overrides beat config.yaml
         self.store = store
         self.verbose = verbose
-        self.allowed_symbols = set(allowed_symbols) if allowed_symbols else None
+        self._allowed_symbols_fn = allowed_symbols if callable(allowed_symbols) else None
+        self.allowed_symbols = set(allowed_symbols) if (allowed_symbols and not callable(allowed_symbols)) else None
         self.mt5 = None                      # lazy: only when enabled
         self.enabled = bool(self.x.get("enabled", False))
         self.dry_run = bool(self.x.get("dry_run", True))
@@ -230,15 +231,22 @@ class ExecutionEngine:
             self._stop.wait(poll)
 
     # ----------------------------------------------------------- scanning
+    def _current_allowed_symbols(self):
+        if self._allowed_symbols_fn is not None:
+            syms = self._allowed_symbols_fn()
+            return set(syms) if syms else None
+        return self.allowed_symbols
+
     def _candidates(self, fresh_seconds: int) -> list:
         """Qualifying setups from the freshest analyses: verdict BUY/SELL only,
         entry timeframe only, symbols restricted to the allowed list."""
         etf = self.entry_tf
+        allowed = self._current_allowed_symbols()
         now = int(time.time())
         out = []
         for meta in self.store.list_analyses():
             symbol, tf = meta["symbol"], meta["tf"]
-            if self.allowed_symbols is not None and symbol not in self.allowed_symbols:
+            if allowed is not None and symbol not in allowed:
                 continue
             if etf and tf.strip().upper() != etf:
                 continue

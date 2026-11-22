@@ -309,8 +309,9 @@ Issues are grouped by **Indicator / SMC / Setup Logic** and **Dashboard Backend 
 
 ---
 
-### 11. [Medium] `ExecutionEngine.allowed_symbols` Is Frozen at Startup
-- **Where:** `app/dashboard/server.py:52-53`, `305-320` (`set_selection`, `select_all`, `clear_selection`), `app/execution/executor.py:48-55`, `228-243` (`_candidates`)
+### 11. [Medium] ~~`ExecutionEngine.allowed_symbols` Is Frozen at Startup~~ *(Fixed)*
+- **Status:** Implemented & verified (`scripts/smoke_rejection.py` — `test_execution_engine_dynamic_allowed_symbols`)
+- **Where:** `app/dashboard/server.py:53`, `app/execution/executor.py:52-54`, `232-246` (`_current_allowed_symbols`, `_candidates`)
 - **What happens:**
   - `ExecutionEngine.__init__` converts `allowed_symbols` into a static `set(allowed_symbols)` once when `create_app` boots (`app/dashboard/server.py:53`).
   - When the user enables or disables symbols in the dashboard settings modal (`POST /api/symbols/selection`, `POST /api/symbols/select-all`, `POST /api/symbols/clear`), `selection` persists to `data/symbol_selection.json`, and `_bar_watcher` immediately switches to the updated `visible_symbols()`, **but `execution_engine.allowed_symbols` stays frozen at its startup set** until the server is restarted (and if `clear_selection` empties the selection, `visible_symbols()` reverts to all `resolved` symbols per `SymbolSelection.enabled_list` policy while `execution_engine.allowed_symbols` still holds the old subset).
