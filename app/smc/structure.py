@@ -3,24 +3,36 @@ from typing import List, Optional, Tuple
 
 
 def find_swings(df, lookback: int = 3) -> List[dict]:
-    """Fractal pivots. A swing high at bar i is the unique max of `high` within
-    [i-lookback, i+lookback]; it is *confirmed* only at bar i+lookback."""
+    """Fractal pivots matching detect_pivots' flank-asymmetric tie-break:
+    equality allowed against the OLDER flank (`[i-lookback, i-1]`), strict
+    against the NEWER flank (`[i+1, i+lookback]`), so on equal highs/lows
+    the newest touch keeps the swing reference. Confirmed at bar i+lookback."""
+    lookback = max(1, int(lookback))
     highs = df["high"].values
     lows = df["low"].values
     times = df["time"].values
     n = len(df)
     swings: List[dict] = []
     for i in range(lookback, n - lookback):
-        seg_h = highs[i - lookback:i + lookback + 1]
-        seg_l = lows[i - lookback:i + lookback + 1]
-        if highs[i] >= seg_h.max() and (seg_h == highs[i]).sum() == 1:
+        phv = float(highs[i])
+        plv = float(lows[i])
+        is_high = True
+        is_low = True
+        for k in range(1, lookback + 1):
+            if highs[i - k] > phv or highs[i + k] >= phv:
+                is_high = False
+            if lows[i - k] < plv or lows[i + k] <= plv:
+                is_low = False
+            if not (is_high or is_low):
+                break
+        if is_high:
             swings.append({
-                "type": "high", "index": i, "price": float(highs[i]),
+                "type": "high", "index": i, "price": phv,
                 "time": int(times[i]), "confirmed_at": i + lookback,
             })
-        if lows[i] <= seg_l.min() and (seg_l == lows[i]).sum() == 1:
+        if is_low:
             swings.append({
-                "type": "low", "index": i, "price": float(lows[i]),
+                "type": "low", "index": i, "price": plv,
                 "time": int(times[i]), "confirmed_at": i + lookback,
             })
     swings.sort(key=lambda s: s["confirmed_at"])

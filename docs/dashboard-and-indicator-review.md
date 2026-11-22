@@ -168,8 +168,9 @@ Issues are grouped by **Indicator / SMC / Setup Logic** and **Dashboard Backend 
 
 ---
 
-### 6. [Medium] Pivot Tie-Break Mismatch Between `find_swings` and `detect_pivots` Drops Equal Highs/Lows
-- **Where:** `app/smc/structure.py:5-28` (`find_swings`) vs `app/smc/rejection.py:130-163` (`detect_pivots`)
+### 6. [Medium] ~~Pivot Tie-Break Mismatch Between `find_swings` and `detect_pivots` Drops Equal Highs/Lows~~ *(Fixed)*
+- **Status:** Implemented & verified (`scripts/smoke_rejection.py` — `test_find_swings_tie_break_matches_detect_pivots`)
+- **Where:** `app/smc/structure.py:5-36` (`find_swings`) vs `app/smc/rejection.py:130-163` (`detect_pivots`)
 - **What happens:**
   - `find_swings` (`app/smc/structure.py:15, 20`) requires strict uniqueness across the entire window:
     ```python

@@ -545,6 +545,41 @@ def test_dealing_range_impulse_leg_and_fast_parity():
     print("dealing range impulse leg & FastSMC parity OK")
 
 
+def test_find_swings_tie_break_matches_detect_pivots():
+    """find_swings uses the same older-flank-equality / newer-flank-strict
+    tie-break as detect_pivots, keeping the newest touch on tight double tops
+    and clustering equal highs when two swings fall within tolerance."""
+    from app.smc.structure import find_swings
+    from app.smc.rejection import detect_pivots
+    from app.smc.liquidity import cluster_equal_levels
+
+    t0 = 1_700_000_000
+    # Exact double top within lookback=3: bar 5 == bar 7 == 1.10500
+    highs = [1.1010, 1.1020, 1.1030, 1.1035, 1.1040, 1.10500, 1.1042, 1.10500, 1.1040, 1.1030, 1.1020]
+    rows = [(t0 + i * 900, h - 0.0005, h, h - 0.0010, h - 0.0003) for i, h in enumerate(highs)]
+    df = mkdf(rows)
+
+    swings = find_swings(df, lookback=3)
+    pivots = detect_pivots(df, n_swing=3)
+    assert swings == pivots, f"swings={swings} != pivots={pivots}"
+    swing_highs = [s for s in swings if s["type"] == "high"]
+    assert len(swing_highs) == 1 and swing_highs[0]["index"] == 7, swing_highs
+
+    # Two separated touches (> lookback bars apart) both emit and cluster into an equal_highs pool
+    highs2 = [
+        1.1010, 1.1020, 1.1030, 1.10500, 1.1035, 1.1025, 1.1030,
+        1.10500, 1.1035, 1.1025, 1.1015,
+    ]
+    rows2 = [(t0 + i * 900, h - 0.0005, h, h - 0.0010, h - 0.0003) for i, h in enumerate(highs2)]
+    df2 = mkdf(rows2)
+    swings2 = find_swings(df2, lookback=3)
+    pivots2 = detect_pivots(df2, n_swing=3)
+    assert swings2 == pivots2, f"swings2={swings2} != pivots2={pivots2}"
+    pools = cluster_equal_levels(swings2, "buyside", tol=0.0005)
+    assert len(pools) == 1 and pools[0]["members"] == [3, 7], pools
+    print("find_swings tie-break & detect_pivots parity OK")
+
+
 if __name__ == "__main__":
     test_detector_fires_on_sweep_engulf()
     test_zone_setups_still_flow()
@@ -561,4 +596,5 @@ if __name__ == "__main__":
     test_skip_already_tested_uses_left_at_and_falls_back()
     test_htf_tp_distance_atr_units()
     test_dealing_range_impulse_leg_and_fast_parity()
+    test_find_swings_tie_break_matches_detect_pivots()
     print("ALL SMOKE TESTS PASSED")
