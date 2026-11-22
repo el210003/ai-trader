@@ -66,6 +66,15 @@ main{flex:1;display:grid;grid-template-columns:1fr 460px;min-height:0}
 .zone{position:absolute;border-radius:2px}
 .zone-label{position:absolute;font-size:9px;font-weight:600;letter-spacing:.5px;padding:1px 4px;border-radius:3px;background:rgba(0,0,0,.5);color:#cfd6e4;white-space:nowrap;pointer-events:none}
 #legend{position:absolute;top:8px;left:8px;z-index:5;display:flex;gap:10px;background:rgba(7,9,15,.78);border:1px solid var(--border);border-radius:8px;padding:6px 10px;font-size:11px;color:var(--muted);backdrop-filter:blur(4px)}
+#chartLoader{position:absolute;inset:0;z-index:7;display:none;align-items:center;justify-content:center;
+  background:rgba(7,9,15,.48);backdrop-filter:blur(2px);pointer-events:none;transition:opacity .15s}
+#chartLoader.show{display:flex}
+.loader-pill{display:inline-flex;align-items:center;gap:9px;padding:8px 15px;border-radius:999px;
+  background:rgba(13,17,23,.94);border:1px solid var(--border2);box-shadow:var(--shadow);
+  font-size:12px;font-weight:600;color:var(--text);letter-spacing:.2px}
+.spinner{width:14px;height:14px;border-radius:50%;border:2px solid rgba(57,208,195,.22);
+  border-top-color:var(--accent);animation:spin .75s linear infinite;flex:none}
+@keyframes spin{to{transform:rotate(360deg)}}
 
 /* ---------- thin CSM strip overlay ---------- */
 #csmStrip{position:absolute;top:44px;left:8px;right:8px;z-index:6;display:none;align-items:center;gap:12px;
@@ -422,6 +431,7 @@ footer{padding:6px 16px;font-size:11px;color:var(--muted);border-top:1px solid v
   <section id="chartWrap">
     <div id="chart"></div>
     <div id="overlay"></div>
+    <div id="chartLoader"><div class="loader-pill"><span class="spinner"></span><span id="chartLoaderText">Loading chart…</span></div></div>
     <div id="legend">
       <label><input type="checkbox" id="tgOB" checked> <span class="sw" style="background:var(--ob-long);border:1px solid var(--green)"></span>Order Blocks</label>
       <label><input type="checkbox" id="tgFVG" checked> <span class="sw" style="background:var(--fvg-long);border:1px solid var(--blue)"></span>FVGs</label>
@@ -1109,39 +1119,67 @@ async function loadMeta(){
 }
 
 let loadSeq = 0;
-async function loadAnalysis(){
+let bgPollTimer = null;
+function setChartLoading(visible, text){
+  const el = $('chartLoader');
+  if (!el) return;
+  if (visible){
+    $('chartLoaderText').textContent = text || 'Loading chart…';
+    el.classList.add('show');
+  } else {
+    el.classList.remove('show');
+  }
+}
+
+async function loadAnalysis(opts = {}){
+  const silent = !!opts.silent;
   const symbol = $('symbolSel').value, tf = $('tfSel').value;
   if (!symbol) return;
   const seq = ++loadSeq;
-  // one automatic retry: the first request after opening a pair can trigger
-  // an on-demand analysis server-side (stale/missing payload) or collide
-  // with a busy watcher -- a single retry covers both without spamming
-  const attempt = async (isRetry) => {
+  if (bgPollTimer){ clearTimeout(bgPollTimer); bgPollTimer = null; }
+  if (!silent){
+    setStatus('busy', `loading ${symbol} ${tf}…`);
+    setChartLoading(true, `Loading ${symbol} ${tf}…`);
+  }
+  const attempt = async (isRetry, bgPollCount = 0) => {
     try{
       const r = await fetch(`/api/analysis?symbol=${encodeURIComponent(symbol)}&tf=${encodeURIComponent(tf)}&bars=400`);
       if (seq !== loadSeq) return;             // user switched pair meanwhile
       if (!r.ok){
         const e = await r.json().catch(() => ({}));
+        setChartLoading(false);
         setStatus('err', e.error || 'failed');
-        if (!isRetry) setTimeout(() => { if (seq === loadSeq) attempt(true); }, 2500);
+        if (!isRetry) setTimeout(() => { if (seq === loadSeq) attempt(true, 0); }, 2500);
         return;
       }
       state.data = await r.json();
       state.utcOffset = null;
-      setStatus(state.data.analysis ? 'ok' : '', state.data.analysis ? `${symbol} ${tf} ready` : 'no analysis yet — retrying…');
+      setChartLoading(false);
+      const refreshing = !!state.data.refreshing;
+      if (refreshing){
+        setStatus('busy', `${symbol} ${tf} · updating analysis…`);
+      } else if (state.data.analysis){
+        setStatus('ok', `${symbol} ${tf} ready`);
+      } else {
+        setStatus('', 'no analysis yet — retrying…');
+      }
       renderChart(); renderStructure(); renderSetups();
       setTimeout(renderBoxes, 300);   // re-run after the chart autoscale settles
       setTimeout(renderBoxes, 900);   // (early passes can catch transient coordinates)
       renderCsmStrip();   // re-render for the selected symbol/tf from cached snapshot
-      if (!state.data.analysis && !isRetry)
-        setTimeout(() => { if (seq === loadSeq) attempt(true); }, 3000);
+      if (refreshing && bgPollCount < 15){
+        bgPollTimer = setTimeout(() => { if (seq === loadSeq) attempt(true, bgPollCount + 1); }, 3000);
+      } else if (!state.data.analysis && !isRetry){
+        bgPollTimer = setTimeout(() => { if (seq === loadSeq) attempt(true, 0); }, 3000);
+      }
     }catch(e){
       if (seq !== loadSeq) return;
+      setChartLoading(false);
       setStatus('err', String(e));
-      if (!isRetry) setTimeout(() => { if (seq === loadSeq) attempt(true); }, 2500);
+      if (!isRetry) setTimeout(() => { if (seq === loadSeq) attempt(true, 0); }, 2500);
     }
   };
-  await attempt(false);
+  await attempt(false, 0);
 }
 
 function fmtStamp(ts){
@@ -1674,7 +1712,7 @@ function setupAuto(){
   if (autoTimer) clearInterval(autoTimer);
   if (liveTimer) clearInterval(liveTimer);
   if ($('autoRefresh').checked && state.meta){
-    autoTimer = setInterval(loadAnalysis, Math.max(15, state.meta.refresh_seconds)*1000);
+    autoTimer = setInterval(() => loadAnalysis({silent: true}), Math.max(15, state.meta.refresh_seconds)*1000);
     // live bar polls 4x faster than the view refresh (min 5s, max 30s)
     const liveMs = Math.max(5000, Math.min(30000, Math.floor(state.meta.refresh_seconds*1000/4)));
     liveTimer = setInterval(liveTick, liveMs);

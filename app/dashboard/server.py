@@ -48,6 +48,8 @@ def create_app(cfg: dict) -> FastAPI:
              "last_pull": None, "last_analysis": None}
     lock = threading.Lock()
     _csm_lock = threading.Lock()   # one background CSM refresh at a time
+    _pair_refreshing = set()       # (symbol, tf) currently re-analyzing on-demand
+    _pair_refresh_lock = threading.Lock()
 
     # ------------------------------------------------ live execution engine
     # Scans stored analyses for BUY/SELL setups and places MT5 orders
@@ -382,47 +384,60 @@ def create_app(cfg: dict) -> FastAPI:
         selection.clear()
         return {"ok": True, "enabled": []}
 
+    def _bg_reanalyze_pair(symbol: str, tf: str):
+        key = (symbol, tf)
+        try:
+            ml.load()   # pick up a model retrained by a background job
+            pipeline.analyze_symbol(store, symbol, tf, cfg, ml, llm)
+        except Exception:
+            traceback.print_exc()
+        finally:
+            with _pair_refresh_lock:
+                _pair_refreshing.discard(key)
+
     # ----------------------------------------------------------- analysis
     @app.get("/api/analysis")
     def analysis(symbol: str = Query(...), tf: str = Query(...), bars: int = 400):
         from ..engine.mtf import TF_MINUTES
-        payload = store.load_analysis(symbol, tf)
-        fresh = payload
-        if fresh is not None:
-            smc = fresh.get("smc") or {}
-            # stale-schema guard: pre-rejection or pre-pivot-book analyses are
-            # regenerated on the fly (one-time per pair; result is re-stored)
-            if "rejections" not in smc or "swing_pivots" not in smc:
-                fresh = None
-            else:
-                # stale-age guard: analyses the watcher no longer refreshes
-                # (disabled pair, weekend gap) anchor overlays to bars/prices
-                # far outside the loaded window -> the chart draws nothing but
-                # session bands. Regenerate on open; fall back to the stored
-                # payload if regeneration itself fails.
-                max_age = max(1800, TF_MINUTES.get(tf, 15) * 120)
-                if time.time() - (fresh.get("generated_at") or 0) > max_age:
-                    fresh = None
-        if fresh is None:
-            try:
-                ml.load()   # pick up a model retrained by a background job
-                fresh = pipeline.analyze_symbol(store, symbol, tf, cfg, ml, llm)
-            except Exception:
-                traceback.print_exc()
-                fresh = payload   # stale overlays beat no overlays
-        payload = fresh
         candles = store.load_candles(symbol, tf)
         if candles.empty:
             return JSONResponse(
                 {"error": f"no candles for {symbol} {tf} - run ingest first"},
                 status_code=404)
+        payload = store.load_analysis(symbol, tf)
+        needs_refresh = False
+        if payload is None:
+            needs_refresh = True
+        else:
+            smc = payload.get("smc") or {}
+            # stale-schema guard: pre-rejection or pre-pivot-book analyses are
+            # regenerated in the background
+            if "rejections" not in smc or "swing_pivots" not in smc:
+                needs_refresh = True
+            else:
+                # stale-age guard: analyses the watcher no longer refreshes
+                # (disabled pair, weekend gap) may anchor overlays outside the
+                # loaded window. Return stored candles + analysis immediately so
+                # the chart never hangs, and refresh in a background thread.
+                max_age = max(1800, TF_MINUTES.get(tf, 15) * 120)
+                if time.time() - (payload.get("generated_at") or 0) > max_age:
+                    needs_refresh = True
+        refreshing = False
+        if needs_refresh:
+            key = (symbol, tf)
+            with _pair_refresh_lock:
+                if key not in _pair_refreshing:
+                    _pair_refreshing.add(key)
+                    threading.Thread(target=_bg_reanalyze_pair, args=(symbol, tf),
+                                     daemon=True, name=f"reanalyze-{symbol}-{tf}").start()
+                refreshing = True
         tail = candles.tail(max(50, min(bars, len(candles))))
         candle_list = [
             {"time": int(r.time), "open": float(r.open), "high": float(r.high),
              "low": float(r.low), "close": float(r.close)}
             for r in tail.itertuples()
         ]
-        return {"analysis": payload, "candles": candle_list}
+        return {"analysis": payload, "candles": candle_list, "refreshing": refreshing}
 
     # ---------------------------------------------------------- live bar
     @app.get("/api/live")
