@@ -379,16 +379,32 @@ def create_app(cfg: dict) -> FastAPI:
     # ----------------------------------------------------------- analysis
     @app.get("/api/analysis")
     def analysis(symbol: str = Query(...), tf: str = Query(...), bars: int = 400):
+        from ..engine.mtf import TF_MINUTES
         payload = store.load_analysis(symbol, tf)
-        if payload is not None:
-            smc = payload.get("smc") or {}
+        fresh = payload
+        if fresh is not None:
+            smc = fresh.get("smc") or {}
             # stale-schema guard: pre-rejection or pre-pivot-book analyses are
             # regenerated on the fly (one-time per pair; result is re-stored)
             if "rejections" not in smc or "swing_pivots" not in smc:
-                payload = None
-        if payload is None:
-            ml.load()   # pick up a model retrained by a background job
-            payload = pipeline.analyze_symbol(store, symbol, tf, cfg, ml, llm)
+                fresh = None
+            else:
+                # stale-age guard: analyses the watcher no longer refreshes
+                # (disabled pair, weekend gap) anchor overlays to bars/prices
+                # far outside the loaded window -> the chart draws nothing but
+                # session bands. Regenerate on open; fall back to the stored
+                # payload if regeneration itself fails.
+                max_age = max(1800, TF_MINUTES.get(tf, 15) * 120)
+                if time.time() - (fresh.get("generated_at") or 0) > max_age:
+                    fresh = None
+        if fresh is None:
+            try:
+                ml.load()   # pick up a model retrained by a background job
+                fresh = pipeline.analyze_symbol(store, symbol, tf, cfg, ml, llm)
+            except Exception:
+                traceback.print_exc()
+                fresh = payload   # stale overlays beat no overlays
+        payload = fresh
         candles = store.load_candles(symbol, tf)
         if candles.empty:
             return JSONResponse(

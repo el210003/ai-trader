@@ -1104,19 +1104,39 @@ async function loadMeta(){
   }
 }
 
+let loadSeq = 0;
 async function loadAnalysis(){
   const symbol = $('symbolSel').value, tf = $('tfSel').value;
   if (!symbol) return;
-  try{
-    const r = await fetch(`/api/analysis?symbol=${encodeURIComponent(symbol)}&tf=${encodeURIComponent(tf)}&bars=400`);
-    if (!r.ok){ const e = await r.json(); setStatus('err', e.error || 'failed'); return; }
-    state.data = await r.json();
-    setStatus(state.data.analysis ? 'ok' : '', state.data.analysis ? `${symbol} ${tf} ready` : 'no analysis yet');
-    renderChart(); renderStructure(); renderSetups();
-    setTimeout(renderBoxes, 300);   // re-run after the chart autoscale settles
-    setTimeout(renderBoxes, 900);   // (early passes can catch transient coordinates)
-    renderCsmStrip();   // re-render for the selected symbol/tf from cached snapshot
-  }catch(e){ setStatus('err', String(e)); }
+  const seq = ++loadSeq;
+  // one automatic retry: the first request after opening a pair can trigger
+  // an on-demand analysis server-side (stale/missing payload) or collide
+  // with a busy watcher -- a single retry covers both without spamming
+  const attempt = async (isRetry) => {
+    try{
+      const r = await fetch(`/api/analysis?symbol=${encodeURIComponent(symbol)}&tf=${encodeURIComponent(tf)}&bars=400`);
+      if (seq !== loadSeq) return;             // user switched pair meanwhile
+      if (!r.ok){
+        const e = await r.json().catch(() => ({}));
+        setStatus('err', e.error || 'failed');
+        if (!isRetry) setTimeout(() => { if (seq === loadSeq) attempt(true); }, 2500);
+        return;
+      }
+      state.data = await r.json();
+      setStatus(state.data.analysis ? 'ok' : '', state.data.analysis ? `${symbol} ${tf} ready` : 'no analysis yet — retrying…');
+      renderChart(); renderStructure(); renderSetups();
+      setTimeout(renderBoxes, 300);   // re-run after the chart autoscale settles
+      setTimeout(renderBoxes, 900);   // (early passes can catch transient coordinates)
+      renderCsmStrip();   // re-render for the selected symbol/tf from cached snapshot
+      if (!state.data.analysis && !isRetry)
+        setTimeout(() => { if (seq === loadSeq) attempt(true); }, 3000);
+    }catch(e){
+      if (seq !== loadSeq) return;
+      setStatus('err', String(e));
+      if (!isRetry) setTimeout(() => { if (seq === loadSeq) attempt(true); }, 2500);
+    }
+  };
+  await attempt(false);
 }
 
 function fmtStamp(ts){
