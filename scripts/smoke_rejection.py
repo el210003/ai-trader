@@ -98,6 +98,7 @@ def test_detector_fires_on_sweep_engulf():
           f"tp={s['take_profit']:.5f} rr={s['rr']} bucket={s['rejection']['bucket']}")
 
     feats = make_features(df2, s, smc, CFG)
+    assert set(feats.keys()) == set(FEATURES), set(feats.keys()) ^ set(FEATURES)
     vec = feature_vector(feats)
     assert len(vec) == len(FEATURES)
     assert feats["rej_is_momentum"] in (0.0, 1.0)
@@ -464,6 +465,37 @@ def test_skip_already_tested_uses_left_at_and_falls_back():
     print("skip_already_tested left_at & candidate fallback OK")
 
 
+def test_htf_tp_distance_atr_units():
+    """htf_tp_distance_atr stays in ATR units (20.0 sentinel when no HTF pool
+    exists, regardless of ATR scale; exact ATR distance when an HTF pool exists)."""
+    df, t = base_rows()
+    setup = {
+        "direction": "long",
+        "entry": 50000.0,
+        "rr": 2.0,
+        "range_position": 0.3,
+        "confluences": ["market structure aligned"],
+        "entry_zone": {"type": "order_block", "origin_index": len(df) - 5},
+    }
+    # High-ATR asset (BTCUSD, ATR = 500.0) without htf_ctx -> sentinel must remain 20.0
+    smc_btc = {"atr": 500.0, "last_close": 50100.0, "sweeps": []}
+    feats_btc = make_features(df, setup, smc_btc, CFG, htf_ctx=None)
+    assert set(feats_btc.keys()) == set(FEATURES)
+    assert feats_btc["htf_tp_distance_atr"] == 20.0, feats_btc["htf_tp_distance_atr"]
+
+    # Low-ATR FX pair (ATR = 0.001) without htf_ctx -> sentinel must remain 20.0
+    smc_fx = {"atr": 0.001, "last_close": 1.1005, "sweeps": []}
+    setup_fx = dict(setup, entry=1.1000)
+    feats_fx = make_features(df, setup_fx, smc_fx, CFG, htf_ctx=None)
+    assert feats_fx["htf_tp_distance_atr"] == 20.0, feats_fx["htf_tp_distance_atr"]
+
+    # With HTF pool 2.0 * ATR above entry -> distance must be 2.0 ATR
+    htf_ctx = {"H1": {"buyside": [50000.0 + 2.0 * 500.0], "sellside": []}}
+    feats_pool = make_features(df, setup, smc_btc, CFG, htf_ctx=htf_ctx)
+    assert abs(feats_pool["htf_tp_distance_atr"] - 2.0) < 1e-9, feats_pool["htf_tp_distance_atr"]
+    print("htf_tp_distance_atr units & feature keys OK")
+
+
 if __name__ == "__main__":
     test_detector_fires_on_sweep_engulf()
     test_zone_setups_still_flow()
@@ -478,4 +510,5 @@ if __name__ == "__main__":
     test_causal_pool_rejection_parity()
     test_structure_independent_active_swings()
     test_skip_already_tested_uses_left_at_and_falls_back()
+    test_htf_tp_distance_atr_units()
     print("ALL SMOKE TESTS PASSED")

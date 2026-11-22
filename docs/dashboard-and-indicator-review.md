@@ -94,8 +94,9 @@ Issues are grouped by **Indicator / SMC / Setup Logic** and **Dashboard Backend 
 
 ---
 
-### 4. [High] `htf_tp_distance_atr` Double-Divides by ATR When No HTF Pool Exists (Breaks Gold / Indices / Crypto)
-- **Where:** `app/ai/features.py:103-118`, `144`
+### 4. [High] ~~`htf_tp_distance_atr` Double-Divides by ATR When No HTF Pool Exists (Breaks Gold / Indices / Crypto)~~ *(Fixed)*
+- **Status:** Implemented & verified (`scripts/smoke_rejection.py` — `test_htf_tp_distance_atr_units`; retrain ML models via `python -m app.pipeline --retrain` if deployed artifacts exist)
+- **Where:** `app/ai/features.py:103-141`
 - **What happens:**
   ```python
   cap = 20.0

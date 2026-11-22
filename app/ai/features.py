@@ -93,7 +93,7 @@ def make_features(df, setup: dict, smc: dict, cfg: dict,
     # entry -> nearest HTF liquidity pool in the profit direction (ATR units)
     entry = float(setup["entry"])
     cap = 20.0
-    tp_dist = cap
+    tp_dist_atr = cap
     if htf_ctx:
         want_pools = "buyside" if direction == "long" else "sellside"
         pools = []
@@ -102,11 +102,11 @@ def make_features(df, setup: dict, smc: dict, cfg: dict,
         if direction == "long":
             beyond = [p for p in pools if p > entry]
             if beyond:
-                tp_dist = min(beyond) - entry
+                tp_dist_atr = (min(beyond) - entry) / atr_v
         else:
             beyond = [p for p in pools if p < entry]
             if beyond:
-                tp_dist = entry - max(beyond)
+                tp_dist_atr = (entry - max(beyond)) / atr_v
 
     # ---- rejection-bar metrics (None -> neutral priors for zone setups)
     rej = setup.get("rejection") or {}
@@ -125,18 +125,15 @@ def make_features(df, setup: dict, smc: dict, cfg: dict,
         "sweep_recency": float(recency),
         "confluence_count": float(len(setup["confluences"])),
         "zone_freshness": float(freshness),
-        "is_order_block": 1.0 if setup["entry_zone"]["type"] == "order_block" else 0.0,
         "trend_alignment": 1.0 if setup.get("trend_aligned") else 0.0,
         "hour_sin": math.sin(2 * math.pi * hour / 24.0),
         "hour_cos": math.cos(2 * math.pi * hour / 24.0),
         "symbol_avg_atr_pct": float((symbol_static or {}).get("symbol_avg_atr_pct", 0.0)),
-        "symbol_setup_density": float((symbol_static or {}).get("symbol_setup_density", 0.0)),
         "symbol_recent_win_rate": (symbol_dynamic or {}).get("symbol_recent_win_rate"),
         "symbol_avg_rr_realized": (symbol_dynamic or {}).get("symbol_avg_rr_realized"),
         "htf_trend_align": float(trend_align) if trend_align is not None else 0.5,
         "htf_pd_alignment": float(pd_align) if pd_align is not None else 0.5,
-        "entry_in_htf_zone": float(htf.get("in_htf_zone") or 0.0),
-        "htf_tp_distance_atr": float(min(cap, tp_dist / atr_v)),
+        "htf_tp_distance_atr": float(min(cap, max(0.0, tp_dist_atr))),
         "rej_exp": rej_exp,
         "rej_clv": rej_clv,
         "rej_is_momentum": 1.0 if (rej and rej_bucket == 1) else 0.0,
