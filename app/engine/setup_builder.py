@@ -87,7 +87,7 @@ def _mtf_confluence(direction: str, entry: float, atr_v: float,
 
 def _rejection_setups(symbol: str, tf: str, df, smc: dict, cfg: dict,
                       htf_ctx: dict = None, csm_dir: str = None,
-                      mtf_cfg: dict = None) -> List[dict]:
+                      mtf_cfg: dict = None, point: float = None) -> List[dict]:
     """Rejection-bar entry family (RejectionProto port, see
     docs/rejection-entry.md). When a recent closed bar is a REJECT (engulfing
     bar that swept a live level and closed back), arm a setup whose entry is a
@@ -120,7 +120,7 @@ def _rejection_setups(symbol: str, tf: str, df, smc: dict, cfg: dict,
     default_rr = float(cfg.get("default_rr", 2.0))
     max_rr = float(cfg.get("max_rr", 5.0))
     retest_buffer = float(cfg.get("retest_buffer_atr", 0.20)) * atr_v
-    point = infer_point(df)
+    point = infer_point(df, point=point if point is not None else cfg.get("point"))
 
     setups: List[dict] = []
     seen = set()
@@ -272,7 +272,7 @@ def _rejection_setups(symbol: str, tf: str, df, smc: dict, cfg: dict,
 
 def build_setups(symbol: str, tf: str, df, smc: dict, cfg: dict,
                  htf_ctx: dict = None, csm_dir: str = None,
-                 mtf_cfg: dict = None) -> List[dict]:
+                 mtf_cfg: dict = None, point: float = None) -> List[dict]:
     close = smc["last_close"]
     atr_v = smc["atr"]
     rng = smc["dealing_range"]
@@ -442,5 +442,5 @@ def build_setups(symbol: str, tf: str, df, smc: dict, cfg: dict,
     # ---- rejection-bar family (config-gated; docs/rejection-entry.md)
     setups.extend(_rejection_setups(symbol, tf, df, smc, cfg,
                                     htf_ctx=htf_ctx, csm_dir=csm_dir,
-                                    mtf_cfg=mtf_cfg))
+                                    mtf_cfg=mtf_cfg, point=point))
     return setups

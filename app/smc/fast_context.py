@@ -61,7 +61,7 @@ class FastSMC:
 
         # exact per-step rejection events: stream once per distinct point size
         # (practically always one; infer_point can drift on unusual quotes)
-        self.point_by_bar = infer_point_by_bar(df)
+        self.point_by_bar = infer_point_by_bar(df, point=cfg.get("point"))
         rj_cfg = cfg.get("rejection") or {}
         self._rej_window = max(2, int(rj_cfg.get("trigger_lookback_bars", 2))) + 16
         self._rej_streams = {}

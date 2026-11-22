@@ -17,7 +17,7 @@ def atr(df: pd.DataFrame, period: int = 14) -> float:
     return float(tr.ewm(alpha=1.0 / period, adjust=False).mean().iloc[-1])
 
 
-def analyze(df: pd.DataFrame, cfg: dict) -> dict:
+def analyze(df: pd.DataFrame, cfg: dict, *, point: float = None) -> dict:
     """df must be ascending by time with columns time,open,high,low,close."""
     lookback = int(cfg.get("swing_lookback", 3))
     swings = find_swings(df, lookback)
@@ -37,7 +37,8 @@ def analyze(df: pd.DataFrame, cfg: dict) -> dict:
                   n - 1, int(cfg.get("ob_max_age_bars", 300)))
     fvgs = fvg_view(find_fvgs(df), n - 1, int(cfg.get("fvg_max_age_bars", 200)))
     atr_val = atr(df, int(cfg.get("atr_period", 14)))
-    rejections = detect_rejections(df, None, atr_val, cfg, tol_pct=tol_pct)
+    pt = point if point is not None else cfg.get("point")
+    rejections = detect_rejections(df, None, atr_val, cfg, tol_pct=tol_pct, point=pt)
     swing_pivots = detect_pivots(df, lookback)   # EA IfPivotAdd book (chart dots)
 
     return {

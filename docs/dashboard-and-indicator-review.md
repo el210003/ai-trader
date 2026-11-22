@@ -211,8 +211,9 @@ Issues are grouped by **Indicator / SMC / Setup Logic** and **Dashboard Backend 
 
 ---
 
-### 7. [Medium] `infer_point` Samples Only 3 Bars (Can Mis-Detect Tick Precision by 100x)
-- **Where:** `app/smc/rejection.py:78-90` (`infer_point`), `app/smc/rejection.py:383-404` (`infer_point_by_bar`), `app/smc/rejection.py:193` (`detect_rejections`), `app/engine/setup_builder.py:123` (`build_rejection_setups`), `app/smc/__init__.py:38` (`analyze`)
+### 7. [Medium] ~~`infer_point` Samples Only 3 Bars (Can Mis-Detect Tick Precision by 100x)~~ *(Fixed)*
+- **Status:** Implemented & verified (`scripts/smoke_rejection.py` — `test_infer_point_trailing_window_and_override`)
+- **Where:** `app/smc/rejection.py:78-99` (`infer_point`), `app/smc/rejection.py:424-444` (`infer_point_by_bar`), `app/smc/rejection.py:181` (`detect_rejections`), `app/engine/setup_builder.py:123` (`build_rejection_setups`), `app/smc/__init__.py:19` (`analyze`)
 - **What happens:**
   - `infer_point(df)` inspects only 3 bars per column (`vals[0]`, `vals[len(vals)//2]`, `vals[-1]`). When those 3 quotes happen to end in trailing zeros (e.g., `1.10500` -> Python `float` `1.105` -> exponent `-3` -> `0.001` instead of `0.00001`), `infer_point` underestimates precision by `10x`–`100x`.
   - That inflates `point` by `100x`, collapsing `body_pts` / `range_pts` to `0` or `1`, breaking D3 decisive-body checks (`body_pts * 3 >= range_pts * 2`), `depth` / `clv` integer percentages, and retrace limit rounding (`c_i - depth_pts * point` in `app/engine/setup_builder.py:145`).

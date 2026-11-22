@@ -580,6 +580,33 @@ def test_find_swings_tie_break_matches_detect_pivots():
     print("find_swings tie-break & detect_pivots parity OK")
 
 
+def test_infer_point_trailing_window_and_override():
+    """infer_point and infer_point_by_bar scan a trailing window so quotes ending
+    in trailing zeros on bar 0 / mid / -1 still detect 5-digit precision, and
+    honor an explicit `point` override."""
+    from app.smc.rejection import infer_point, infer_point_by_bar
+
+    t0 = 1_700_000_000
+    # Bars 0, 2 (mid), and 4 (last) all end in .xxx00 (float repr 1.105 -> exponent -3),
+    # while bar 3 has 5 decimal places (1.10512 -> exponent -5).
+    rows = [
+        (t0 + 0 * 900, 1.10500, 1.10500, 1.10500, 1.10500),
+        (t0 + 1 * 900, 1.10500, 1.10500, 1.10500, 1.10500),
+        (t0 + 2 * 900, 1.10500, 1.10500, 1.10500, 1.10500),
+        (t0 + 3 * 900, 1.10500, 1.10512, 1.10500, 1.10500),
+        (t0 + 4 * 900, 1.10500, 1.10500, 1.10500, 1.10500),
+    ]
+    df = mkdf(rows)
+    assert infer_point(df) == 1e-5, infer_point(df)
+    by_bar = infer_point_by_bar(df)
+    assert by_bar[-1] == 1e-5, by_bar
+    for idx in range(len(df)):
+        assert by_bar[idx] == infer_point(df.iloc[:idx + 1]), (idx, by_bar[idx])
+    assert infer_point(df, point=0.0001) == 0.0001
+    assert infer_point_by_bar(df, point=0.0001)[-1] == 0.0001
+    print("infer_point trailing window & override OK")
+
+
 if __name__ == "__main__":
     test_detector_fires_on_sweep_engulf()
     test_zone_setups_still_flow()
@@ -597,4 +624,5 @@ if __name__ == "__main__":
     test_htf_tp_distance_atr_units()
     test_dealing_range_impulse_leg_and_fast_parity()
     test_find_swings_tie_break_matches_detect_pivots()
+    test_infer_point_trailing_window_and_override()
     print("ALL SMOKE TESTS PASSED")

@@ -75,17 +75,27 @@ def swept_level_name(side: str, kind: str) -> str:
     return _SIDE_NAMES.get((side, kind), f"{side} {kind}")
 
 
-def infer_point(df) -> float:
-    """Infer the symbol's point size (10^-digits) from the price series.
+def infer_point(df, window: int = 100, point: Optional[float] = None) -> float:
+    """Infer the symbol's point size (10^-digits) from the trailing price window.
     MT5 rates are exact decimal quotes, so the shortest repr recovers the
-    quote precision; callers who know the digits can pass their own point."""
+    quote precision; callers who know the digits can pass their own `point`."""
+    if point is not None and float(point) > 0:
+        return float(point)
+    n = len(df)
+    if n == 0:
+        return 1e-5
+    w = max(1, int(window))
     best = 0
     for col in ("open", "high", "low", "close"):
-        vals = df[col].values
-        for v in (vals[0], vals[len(vals) // 2], vals[-1]):
+        vals = df[col].values[-w:]
+        for v in reversed(vals):
             d = -Decimal(str(float(v))).as_tuple().exponent
             if d > best:
                 best = d
+                if best >= 8:
+                    break
+        if best >= 8:
+            break
     return float(10 ** -min(max(best, 1), 8))
 
 
@@ -165,7 +175,8 @@ def detect_pivots(df, n_swing: int, keep_last: int = 400) -> List[dict]:
 
 
 def detect_rejections(df, pools: Optional[List[dict]], atr_val: float, cfg: dict,
-                      keep_last: int = 100, *, tol_pct: Optional[float] = None) -> List[dict]:
+                      keep_last: int = 100, *, tol_pct: Optional[float] = None,
+                      point: Optional[float] = None) -> List[dict]:
     """Single chronological pass over closed bars (ProcessBar order:
     evaluate -> fold day extremes -> break body-closed levels -> add pivots
     confirmed by this bar). Returns rejection events (ascending by bar index,
@@ -190,7 +201,7 @@ def detect_rejections(df, pools: Optional[List[dict]], atr_val: float, cfg: dict
     weak_close = int(rj.get("weak_close_pct", 50))               # clvPct <  50
     use_day = bool(rj.get("use_day_extremes", True))             # InpUseDayExtreme
     min_range = float(rj.get("min_range_atr", 0.05)) * (atr_val or 0.0)
-    point = infer_point(df)
+    point = infer_point(df, point=point if point is not None else cfg.get("point"))
 
     o = df["open"].values
     h = df["high"].values
@@ -413,31 +424,25 @@ def _dec_exponent(v) -> int:
     return -Decimal(str(float(v))).as_tuple().exponent
 
 
-def infer_point_by_bar(df) -> "np.ndarray":
-    """point size infer_point(df[:i+1]) would infer, for every bar i.
-
-    infer_point samples vals[0], vals[len//2], vals[-1] of each column; for a
-    prefix of length i+1 the middle sample is bar (i+1)//2. Returns a float
-    array with point_by_bar[i] == infer_point(df.iloc[:i+1]) exactly."""
+def infer_point_by_bar(df, window: int = 100, point: Optional[float] = None) -> "np.ndarray":
+    """point size infer_point(df[:i+1], window=window, point=point) would infer,
+    for every bar i. Returns a float array with
+    point_by_bar[i] == infer_point(df.iloc[:i+1], window=window, point=point) exactly."""
     n = len(df)
     if n == 0:
         return np.empty(0)
-    d0 = 0
+    if point is not None and float(point) > 0:
+        return np.full(n, float(point), dtype=float)
+    w = max(1, int(window))
     D = np.zeros(n, dtype=np.int64)          # per-bar max decimals over columns
     for col in ("open", "high", "low", "close"):
         vals = df[col].values
-        d0 = max(d0, _dec_exponent(vals[0]))
         col_d = np.fromiter((_dec_exponent(v) for v in vals), dtype=np.int64, count=n)
         D = np.maximum(D, col_d)
-    out = np.empty(n, dtype=float)
-    out[0] = float(10 ** -min(max(d0, 1), 8))
-    if n > 1:
-        idx = np.arange(1, n)
-        best = np.maximum(d0, np.maximum(D[(idx + 1) // 2], D[idx]))
-        # map the few distinct exponent values through the exact int power
-        cache = {int(b): float(10 ** -min(max(int(b), 1), 8)) for b in np.unique(best)}
-        out[1:] = [cache[int(b)] for b in best]
-    return out
+    # rolling max over trailing window [max(0, i + 1 - w), i + 1)
+    best = np.array([int(D[max(0, i + 1 - w):i + 1].max()) for i in range(n)], dtype=np.int64)
+    cache = {int(b): float(10 ** -min(max(int(b), 1), 8)) for b in np.unique(best)}
+    return np.array([cache[int(b)] for b in best], dtype=float)
 
 
 class RejectionStream:
