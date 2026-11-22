@@ -72,8 +72,9 @@ Issues are grouped by **Indicator / SMC / Setup Logic** and **Dashboard Backend 
 
 ---
 
-### 3. [High] `skip_already_tested` Falsely Rejects Order Blocks During the Impulse Leg
-- **Where:** `app/engine/setup_builder.py:387-397`, `app/smc/order_blocks.py:36-55`
+### 3. [High] ~~`skip_already_tested` Falsely Rejects Order Blocks During the Impulse Leg~~ *(Fixed)*
+- **Status:** Implemented & verified (`scripts/smoke_rejection.py` — `test_skip_already_tested_uses_left_at_and_falls_back`)
+- **Where:** `app/engine/setup_builder.py:338-360`, `app/smc/order_blocks.py:36-55`
 - **What happens:**
   - `find_order_blocks` correctly tracks `left_at` (the first candle `k >= ev["index"]` whose `low > top` for bullish OBs or `high < bottom` for bearish OBs) so the impulse candles leaving the OB do not count as mitigation (`app/smc/order_blocks.py:42-55`).
   - However, in `build_setups`, `skip_already_tested` scans `range(z["origin_index"] + 1, n)` for `low <= entry` (`entry = min(z["top"], close)`). Because candle `origin_index + 1` opens near `close[origin_index] <= top` (and any intermediate candles before `ev["index"]` or `left_at` still overlap `[bottom, top]`), its low is almost always `<= top` before price ever leaves the OB (`left_at`), **disqualifying nearly all Order Block setups immediately**.

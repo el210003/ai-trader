@@ -286,6 +286,9 @@ def build_setups(symbol: str, tf: str, df, smc: dict, cfg: dict,
     min_risk = float(cfg.get("min_risk_atr", 0.75)) * atr_v
     retest_buffer = float(cfg.get("retest_buffer_atr", 0.20)) * atr_v
     entry_valid = int(cfg.get("entry_valid_bars", 24))
+    skip_already_tested = bool(cfg.get("skip_already_tested", True))
+    lows = df["low"].values
+    highs = df["high"].values
     setups: List[dict] = []
 
     if atr_v <= 0:
@@ -332,6 +335,14 @@ def build_setups(symbol: str, tf: str, df, smc: dict, cfg: dict,
             dist_atr = abs(close - mid) / atr_v
             if dist_atr > 12.0:                           # absurdly far zone
                 continue
+            if skip_already_tested:
+                z_entry = min(z["top"], close) if direction == "long" else max(z["bottom"], close)
+                test_start = (z["left_at"] + 1) if z.get("left_at") is not None else (z["origin_index"] + 1)
+                if test_start < n:
+                    if direction == "long" and bool((lows[test_start:n] <= z_entry).any()):
+                        continue
+                    if direction == "short" and bool((highs[test_start:n] >= z_entry).any()):
+                        continue
             score = (2 if correct_half else 0) + (1 if ztype == "order_block" else 0) \
                     + (1 if correct_half and ztype == "order_block" else 0)
             cands.append((score, -dist_atr, ztype, z, correct_half))
@@ -378,24 +389,12 @@ def build_setups(symbol: str, tf: str, df, smc: dict, cfg: dict,
             tp, rr = _target_liquidity("short", entry, close, risk, smc, min_rr, default_rr,
                                        extra_pools=htf_pools)
 
-        # ---- present-time gates: skip setups that are look-back, not actionable
-        # (a) price already ran away from the entry toward TP (chasing),
-        # (b) the entry zone was already retested since it formed (fill is gone).
+        # ---- present-time gate: skip setups that are look-back, not actionable
+        # (price already ran away from the entry toward TP — chasing)
         run_atr = ((close - entry) if direction == "long" else (entry - close)) / atr_v
         max_run = float(cfg.get("max_entry_distance_atr", 1.0))
         if run_atr > max_run:
             continue
-        if cfg.get("skip_already_tested", True):
-            tested = False
-            for k in range(z["origin_index"] + 1, n):
-                if direction == "long" and df["low"].iat[k] <= entry:
-                    tested = True
-                    break
-                if direction == "short" and df["high"].iat[k] >= entry:
-                    tested = True
-                    break
-            if tested:
-                continue
 
         if rr > max_rr:                  # cap fantasy RR (target too far to be meaningful)
             tp = entry + max_rr * risk if direction == "long" else entry - max_rr * risk

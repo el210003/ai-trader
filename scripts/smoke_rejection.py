@@ -402,6 +402,68 @@ def test_structure_independent_active_swings():
     print("structure independent active swings & FastSMC parity OK")
 
 
+def test_skip_already_tested_uses_left_at_and_falls_back():
+    """skip_already_tested starts scanning after OB impulse departure (left_at + 1)
+    so impulse bars overlapping the OB don't disqualify it, and falls back to the
+    next untested candidate zone if a higher-scored zone was already retested."""
+    t0 = 1_700_000_000
+    rows = []
+    # Build 20 bars with a bullish BOS, an OB at index 10 whose impulse bars 11-12
+    # still overlap [bottom, top] before leaving at left_at=13, and clean pullback at 16.
+    for i in range(18):
+        o, h, l, c = 1.1000, 1.1005, 1.0995, 1.1002
+        if i == 10:  # bearish OB candle [1.0990, 1.1000]
+            o, h, l, c = 1.0998, 1.1000, 1.0990, 1.0992
+        elif i == 11:  # impulse candle 1 still overlaps OB top (low 1.0995 <= 1.1000)
+            o, h, l, c = 1.0992, 1.1006, 1.0995, 1.1005
+        elif i == 12:  # impulse candle 2 still overlaps OB top (low 1.0998 <= 1.1000)
+            o, h, l, c = 1.1005, 1.1012, 1.0998, 1.1010
+        elif i in (13, 14, 15):  # left_at=13: low > 1.1000
+            o, h, l, c = 1.1010, 1.1018, 1.1005, 1.1014
+        elif i in (16, 17):  # price approaches OB without touching entry 1.1000
+            o, h, l, c = 1.1012, 1.1013, 1.1002, 1.1004
+        rows.append((t0 + i * 900, o, h, l, c))
+    df = mkdf(rows)
+
+    cfg = dict(CFG, skip_already_tested=True, rejection=dict(CFG["rejection"], enabled=False))
+    ob1 = {
+        "type": "bullish_ob", "direction": "bullish",
+        "top": 1.1000, "bottom": 1.0990,
+        "origin_index": 10, "origin_time": t0 + 10 * 900,
+        "event_type": "bos", "event_index": 12, "event_time": t0 + 12 * 900,
+        "left_at": 13, "mitigated_index": None, "mitigated": False,
+    }
+    smc = {
+        "trend": "bullish", "swings": [], "events": [], "sweeps": [], "rejections": [],
+        "swing_pivots": [], "liquidity_pools": [],
+        "dealing_range": {"top": 1.1020, "bottom": 1.0985, "equilibrium": 1.10025,
+                          "high_time": t0 + 15 * 900, "low_time": t0, "position": 0.54, "zone": "premium"},
+        "order_blocks": {"all": [ob1], "fresh": [ob1]},
+        "fvgs": {"all": [], "fresh": []},
+        "atr": 0.0010, "last_close": 1.1004, "n_bars": len(df),
+    }
+    setups = build_setups("EURUSD", "M15", df, smc, cfg)
+    longs = [s for s in setups if s["direction"] == "long"]
+    assert len(longs) == 1 and longs[0]["entry_zone"]["origin_index"] == 10, setups
+
+    # Now add a higher-scored OB (ob_tested) that WAS retested after left_at, and verify fallback to ob1
+    rows2 = list(rows)
+    rows2[15] = (t0 + 15 * 900, 1.1014, 1.1016, 1.1001, 1.1006)  # low 1.1001 <= 1.1002 (retests ob_tested)
+    df2 = mkdf(rows2)
+    ob_tested = {
+        "type": "bullish_ob", "direction": "bullish",
+        "top": 1.1002, "bottom": 1.0994,
+        "origin_index": 11, "origin_time": t0 + 11 * 900,
+        "event_type": "bos", "event_index": 12, "event_time": t0 + 12 * 900,
+        "left_at": 13, "mitigated_index": None, "mitigated": False,
+    }
+    smc2 = dict(smc, order_blocks={"all": [ob_tested, ob1], "fresh": [ob_tested, ob1]})
+    setups2 = build_setups("EURUSD", "M15", df2, smc2, cfg)
+    longs2 = [s for s in setups2 if s["direction"] == "long"]
+    assert len(longs2) == 1 and longs2[0]["entry_zone"]["origin_index"] == 10, setups2
+    print("skip_already_tested left_at & candidate fallback OK")
+
+
 if __name__ == "__main__":
     test_detector_fires_on_sweep_engulf()
     test_zone_setups_still_flow()
@@ -415,4 +477,5 @@ if __name__ == "__main__":
     test_multi_swing_book_and_fast_parity()
     test_causal_pool_rejection_parity()
     test_structure_independent_active_swings()
+    test_skip_already_tested_uses_left_at_and_falls_back()
     print("ALL SMOKE TESTS PASSED")
