@@ -746,6 +746,28 @@ function renderBoxes(){
       overlay.appendChild(lbl);
     }
   }
+  // ---- bold CHoCH structure badges (rendered in overlay so font-weight & dark green/red pop on dark chart) ----
+  if ($('tgStructure') && $('tgStructure').checked && a.smc.events){
+    const candleMap = new Map(candles.map(c => [c.time, c]));
+    for (const e of a.smc.events){
+      if (e.type !== 'choch' || e.time < firstT) continue;
+      const c = candleMap.get(e.time);
+      const cx = t2c(e.time);
+      if (!c || cx == null) continue;
+      const isBull = e.direction === 'bullish';
+      const yp = p2c(isBull ? c.low : c.high);
+      if (yp == null) continue;
+      const lbl = document.createElement('div');
+      lbl.className = 'zone-label';
+      lbl.textContent = 'CHOCH';
+      lbl.style.cssText = `left:${cx}px; top:${isBull ? yp + 14 : yp - 28}px; transform:translateX(-50%);`
+        + `font-size:10px; font-weight:800; letter-spacing:.6px; padding:1px 5px; border-radius:4px;`
+        + (isBull
+          ? `background:#064e3b; color:#6ee7b7; border:1px solid #059669;`
+          : `background:#7f1d1d; color:#fca5a5; border:1px solid #dc2626;`);
+      overlay.appendChild(lbl);
+    }
+  }
   // ---- rejection-bar candle highlights (RejectionProto family) ----
   if ($('tgRej') && $('tgRej').checked && a.smc.rejections){
     for (const r of a.smc.rejections){
@@ -818,10 +840,12 @@ function renderChart(){
   if ($('tgStructure').checked){
     for (const e of (a.smc.events||[])){
       if (!times.has(e.time)) continue;
+      const isBull = e.direction === 'bullish';
+      const isChoch = e.type === 'choch';
       markers.push({ time:e.time,
-        position: e.direction==='bullish' ? 'belowBar' : 'aboveBar',
-        color: e.type==='choch' ? '#f5b83d' : '#8792a6',
-        shape:'circle', size:1, text: e.type.toUpperCase() });
+        position: isBull ? 'belowBar' : 'aboveBar',
+        color: isChoch ? (isBull ? '#059669' : '#dc2626') : '#8792a6',
+        shape:'circle', size:1, text: isChoch ? '' : e.type.toUpperCase() });
     }
   }
   if ($('tgSwings').checked && a.smc.swing_pivots){   // EA DrawSwingMarker: silver dot at the pivot extreme
