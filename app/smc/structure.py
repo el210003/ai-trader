@@ -1,5 +1,5 @@
 """Market structure: swing points, Break of Structure (BOS) and Change of Character (CHoCH)."""
-from typing import List, Tuple
+from typing import List, Optional, Tuple
 
 
 def find_swings(df, lookback: int = 3) -> List[dict]:
@@ -28,8 +28,9 @@ def find_swings(df, lookback: int = 3) -> List[dict]:
 
 
 def detect_structure(df, swings: List[dict]) -> Tuple[List[dict], str]:
-    """Walk candles chronologically from each swing's confirmation point.
-    A candle CLOSE beyond the last swing high/low is a structural break:
+    """Walk candles chronologically while tracking the active un-broken
+    swing high and swing low independently.
+    A candle CLOSE beyond the active swing high/low is a structural break:
       - break in trend direction      -> BOS (continuation)
       - break against trend direction -> CHoCH (potential reversal)
     Returns (events, current_trend)."""
@@ -38,25 +39,45 @@ def detect_structure(df, swings: List[dict]) -> Tuple[List[dict], str]:
     n = len(df)
     events: List[dict] = []
     trend = "neutral"
+    active_high: Optional[dict] = None
+    active_low: Optional[dict] = None
+    ptr = 0
 
-    for k, sw in enumerate(swings):
-        start = sw["confirmed_at"]
-        end = swings[k + 1]["confirmed_at"] if k + 1 < len(swings) else n
-        for i in range(start, end):
-            if sw["type"] == "high" and closes[i] > sw["price"]:
-                etype = "choch" if trend == "bearish" else "bos"
-                events.append({
-                    "type": etype, "direction": "bullish", "level": sw["price"],
-                    "level_time": sw["time"], "index": i, "time": int(times[i]),
-                })
-                trend = "bullish"
-                break
-            if sw["type"] == "low" and closes[i] < sw["price"]:
-                etype = "choch" if trend == "bullish" else "bos"
-                events.append({
-                    "type": etype, "direction": "bearish", "level": sw["price"],
-                    "level_time": sw["time"], "index": i, "time": int(times[i]),
-                })
-                trend = "bearish"
-                break
+    for i in range(n):
+        while ptr < len(swings) and int(swings[ptr]["confirmed_at"]) <= i:
+            sw = swings[ptr]
+            if sw["type"] == "high":
+                active_high = sw
+            else:
+                active_low = sw
+            ptr += 1
+
+        if active_high is not None and closes[i] > active_high["price"]:
+            etype = "choch" if trend == "bearish" else "bos"
+            events.append({
+                "type": etype,
+                "direction": "bullish",
+                "level": float(active_high["price"]),
+                "level_time": int(active_high["time"]),
+                "level_index": int(active_high["index"]),
+                "index": int(i),
+                "time": int(times[i]),
+            })
+            trend = "bullish"
+            active_high = None
+
+        if active_low is not None and closes[i] < active_low["price"]:
+            etype = "choch" if trend == "bullish" else "bos"
+            events.append({
+                "type": etype,
+                "direction": "bearish",
+                "level": float(active_low["price"]),
+                "level_time": int(active_low["time"]),
+                "level_index": int(active_low["index"]),
+                "index": int(i),
+                "time": int(times[i]),
+            })
+            trend = "bearish"
+            active_low = None
+
     return events, trend

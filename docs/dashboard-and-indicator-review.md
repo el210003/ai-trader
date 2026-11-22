@@ -38,8 +38,9 @@ Issues are grouped by **Indicator / SMC / Setup Logic** and **Dashboard Backend 
 
 ---
 
-### 2. [High] `detect_structure` Skips Unbroken Swings When Another Swing Confirms in Between
-- **Where:** `app/smc/structure.py:31-58` (`detect_structure`)
+### 2. [High] ~~`detect_structure` Skips Unbroken Swings When Another Swing Confirms in Between~~ *(Fixed)*
+- **Status:** Implemented & verified (`scripts/smoke_rejection.py` — `test_structure_independent_active_swings`)
+- **Where:** `app/smc/structure.py:31-79` (`detect_structure`)
 - **What happens:**
   ```python
   for k, sw in enumerate(swings):

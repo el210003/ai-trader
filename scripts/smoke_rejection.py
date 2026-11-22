@@ -358,6 +358,50 @@ def test_causal_pool_rejection_parity():
     print("causal pool rejection parity OK")
 
 
+def test_structure_independent_active_swings():
+    """detect_structure tracks active_high and active_low independently across
+    chronological bars, preserves unbroken swings when an opposing swing confirms,
+    handles simultaneous confirmed_at swings, and matches FastSMC.at(i)."""
+    from app.smc.structure import detect_structure
+    from app.smc.fast_context import FastSMC
+
+    t0 = 1_700_000_000
+    rows = []
+    for i in range(15):
+        c = 1.1010 if i == 13 else 1.0970
+        rows.append((t0 + i * 900, c - 0.0005, c + 0.0005, c - 0.0005, c))
+    df = mkdf(rows)
+    swings = [
+        {"type": "high", "index": 5, "price": 1.1000, "time": t0 + 5 * 900, "confirmed_at": 8},
+        {"type": "low", "index": 8, "price": 1.0950, "time": t0 + 8 * 900, "confirmed_at": 11},
+    ]
+    events, trend = detect_structure(df, swings)
+    assert len(events) == 1, events
+    assert events[0]["direction"] == "bullish" and events[0]["type"] == "bos"
+    assert events[0]["index"] == 13 and events[0]["level_index"] == 5
+    assert trend == "bullish"
+
+    # Simultaneous confirmed_at swings on the same bar
+    swings_simul = [
+        {"type": "high", "index": 3, "price": 1.1000, "time": t0 + 3 * 900, "confirmed_at": 6},
+        {"type": "low", "index": 3, "price": 1.0950, "time": t0 + 3 * 900, "confirmed_at": 6},
+    ]
+    events_s, trend_s = detect_structure(df, swings_simul)
+    assert len(events_s) == 1 and events_s[0]["direction"] == "bullish" and events_s[0]["index"] == 13
+    assert trend_s == "bullish"
+
+    # FastSMC parity check across alternating swing sequence
+    df_base, _ = base_rows()
+    fast = FastSMC(df_base, CFG)
+    for idx in range(20, len(df_base)):
+        sub = df_base.iloc[:idx + 1].reset_index(drop=True)
+        ref = analyze(sub, CFG)
+        got = fast.at(idx)
+        assert got["events"] == ref["events"], f"events mismatch at {idx}"
+        assert got["trend"] == ref["trend"], f"trend mismatch at {idx}"
+    print("structure independent active swings & FastSMC parity OK")
+
+
 if __name__ == "__main__":
     test_detector_fires_on_sweep_engulf()
     test_zone_setups_still_flow()
@@ -370,4 +414,5 @@ if __name__ == "__main__":
     test_equal_pool_sweep_and_consumption()
     test_multi_swing_book_and_fast_parity()
     test_causal_pool_rejection_parity()
+    test_structure_independent_active_swings()
     print("ALL SMOKE TESTS PASSED")
