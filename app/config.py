@@ -131,13 +131,21 @@ def _deep_merge(base: dict, override: dict) -> dict:
     return out
 
 
-def load_config(path: str = None) -> dict:
+def load_config(path: str = None, demo: bool = False) -> dict:
     cfg_path = Path(path) if path else ROOT / "config.yaml"
     user = {}
     if cfg_path.exists():
         with open(cfg_path, "r", encoding="utf-8") as f:
             user = yaml.safe_load(f) or {}
     cfg = _deep_merge(DEFAULTS, user)
+    if demo:
+        cfg["_demo"] = True
+        db_p = Path(cfg["storage"]["path"])
+        if not db_p.name.startswith("demo_"):
+            cfg["storage"]["path"] = str(db_p.with_name("demo_" + db_p.name))
+        m_p = Path(cfg["ai"]["ml"]["model_path"])
+        if not m_p.name.startswith("demo_"):
+            cfg["ai"]["ml"]["model_path"] = str(m_p.with_name("demo_" + m_p.name))
     # resolve relative paths against project root
     cfg["storage"]["path"] = str((ROOT / cfg["storage"]["path"]).resolve())
     cfg["ai"]["ml"]["model_path"] = str((ROOT / cfg["ai"]["ml"]["model_path"]).resolve())

@@ -479,7 +479,7 @@ def main():
                    help="(trade) force dry-run regardless of config.yaml")
     args = p.parse_args()
 
-    cfg = load_config(args.config)
+    cfg = load_config(args.config, demo=bool(getattr(args, "demo", False)))
     handlers = {
         "ingest": cmd_ingest, "analyze": cmd_analyze, "train": cmd_train,
         "serve": cmd_serve, "run": cmd_run,
