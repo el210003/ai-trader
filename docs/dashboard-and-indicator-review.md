@@ -334,8 +334,9 @@ Issues are grouped by **Indicator / SMC / Setup Logic** and **Dashboard Backend 
 
 ---
 
-### 12. [Medium] `liveTick()` Re-renders the Entire Chart Every Few Seconds & Only One Setup's Lines Are Drawn
-- **Where:** `app/dashboard/static/index.html:609-620` (`renderBoxes` `utc_offset`), `836-845` (`renderChart` price lines), `1620-1636` (`liveTick`)
+### 12. [Medium] ~~`liveTick()` Re-renders the Entire Chart Every Few Seconds & Only One Setup's Lines Are Drawn~~ *(Fixed)*
+- **Status:** Implemented & verified (`scripts/smoke_rejection.py` — `test_index_html_chart_and_livetick_fixes`)
+- **Where:** `app/dashboard/static/index.html:543`, `613-624` (`renderBoxes` `utc_offset`), `840-847` (`renderChart` price lines), `1132` (`loadAnalysis`), `1625-1657` (`liveTick`)
 - **What happens:**
   1. `renderChart()` (`app/dashboard/static/index.html:836-841`) picks only `(a.setups||[]).find(s => s.verdict==='BUY' || s.verdict==='SELL') || (a.setups||[])[0]`, hiding the second setup's Entry/SL/TP lines whenever both a `long` and `short` setup are present on the same pair/timeframe.
   2. `liveTick()` (`app/dashboard/static/index.html:1620-1636`) calls full `renderChart()` on every forming-bar tick (`setData`, `clearPriceLines`, `setMarkers`, `renderBoxes`), tearing down and recreating all chart overlays every 5–15 seconds and resetting pan/zoom interactions instead of calling `state.series.update(c)`.

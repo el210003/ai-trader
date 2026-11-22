@@ -540,7 +540,7 @@ footer{padding:6px 16px;font-size:11px;color:var(--muted);border-top:1px solid v
 </div>
 
 <script>
-const state = { meta:null, data:null, series:null, chart:null, priceLines:[], pricePrecision:null,
+const state = { meta:null, data:null, series:null, chart:null, priceLines:[], pricePrecision:null, utcOffset:null,
                 allSymbols:[], filterText:'', settingsPending:new Set(), settingsOriginal:new Set(),
                 journalLoaded:false, csm:null, csmHidden:false, mtfStatus:null };
 const CCY_COLORS = {EUR:'#2962ff', USD:'#ff5252', GBP:'#ff9800', AUD:'#4caf50',
@@ -612,10 +612,13 @@ function renderBoxes(){
     // data is younger than ~90 min (else weekend/stale -> fallback).
     let off = Number.isFinite(parseFloat(scfg.utc_offset)) ? parseFloat(scfg.utc_offset) : null;
     if (off == null){
-      const now = Date.now()/1000;
-      const est = (candles[candles.length-1].time + tfSec) - now;
-      const offH = Math.round(est/3600);
-      off = (Math.abs(est - offH*3600) <= 900 && est > -5400) ? offH : 2;
+      if (state.utcOffset == null){
+        const now = Date.now()/1000;
+        const est = (candles[candles.length-1].time + tfSec) - now;
+        const offH = Math.round(est/3600);
+        state.utcOffset = (Math.abs(est - offH*3600) <= 900 && est > -5400) ? offH : 2;
+      }
+      off = state.utcOffset;
     }
     const offSec = Math.round(off * 3600);
     const hours = { asia: scfg.asia || [0,9], london: scfg.london || [8,16.5], ny: scfg.ny || [13,22] };
@@ -838,11 +841,12 @@ function renderChart(){
     a.smc.rejections.filter(r => times.has(r.time)).length : null;
   $('rejCount').textContent = (rejIn != null) ? String(rejIn) : '';
 
-  const active = (a.setups||[]).find(s => s.verdict==='BUY' || s.verdict==='SELL') || (a.setups||[])[0];
-  if (active){
-    addPriceLine(active.entry, '#39d0c3', 'ENTRY');
-    addPriceLine(active.stop_loss, '#f25f5c', 'SL', LightweightCharts.LineStyle.Dashed);
-    addPriceLine(active.take_profit, '#6c9eff', 'TP', LightweightCharts.LineStyle.Dashed);
+  const setups = a.setups || [];
+  for (const s of setups){
+    const pfx = setups.length > 1 ? (s.direction === 'long' ? 'LONG ' : 'SHORT ') : '';
+    addPriceLine(s.entry, '#39d0c3', pfx + 'ENTRY');
+    addPriceLine(s.stop_loss, '#f25f5c', pfx + 'SL', LightweightCharts.LineStyle.Dashed);
+    addPriceLine(s.take_profit, '#6c9eff', pfx + 'TP', LightweightCharts.LineStyle.Dashed);
   }
   if (a.smc.dealing_range){
     addPriceLine(a.smc.dealing_range.equilibrium, '#8792a6', 'EQ 50%', LightweightCharts.LineStyle.Dotted);
@@ -1123,6 +1127,7 @@ async function loadAnalysis(){
         return;
       }
       state.data = await r.json();
+      state.utcOffset = null;
       setStatus(state.data.analysis ? 'ok' : '', state.data.analysis ? `${symbol} ${tf} ready` : 'no analysis yet — retrying…');
       renderChart(); renderStructure(); renderSetups();
       setTimeout(renderBoxes, 300);   // re-run after the chart autoscale settles
@@ -1628,16 +1633,33 @@ async function liveTick(){
     const j = await r.json();
     const cs = state.data && state.data.candles;
     if (!cs || !j.candles || !j.candles.length) return;
-    let changed = false;
+    let newBarAppended = false;
+    let outOfOrder = false;
+    const updates = [];
     for (const c of j.candles){
       const last = cs[cs.length-1];
       if (last && last.time === c.time){
-        if (last.open !== c.open || last.high !== c.high || last.low !== c.low || last.close !== c.close){ cs[cs.length-1] = c; changed = true; }
+        if (last.open !== c.open || last.high !== c.high || last.low !== c.low || last.close !== c.close){
+          cs[cs.length-1] = c;
+          updates.push(c);
+        }
       } else if (!last || c.time > last.time){
-        cs.push(c); if (cs.length > 500) cs.shift(); changed = true;
+        cs.push(c);
+        if (cs.length > 500) cs.shift();
+        updates.push(c);
+        newBarAppended = true;
+      } else {
+        outOfOrder = true;
       }
     }
-    if (changed) renderChart();
+    if (outOfOrder){
+      renderChart();
+    } else if (updates.length){
+      for (const c of updates){
+        state.series.update({ time: c.time, open: c.open, high: c.high, low: c.low, close: c.close });
+      }
+      if (newBarAppended) renderBoxes();
+    }
   }catch(e){ /* silent - the full view refresh resyncs anyway */ }
 }
 function setupAuto(){

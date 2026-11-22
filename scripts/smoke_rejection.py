@@ -793,6 +793,21 @@ def test_execution_engine_dynamic_allowed_symbols():
     print("ExecutionEngine dynamic allowed_symbols OK")
 
 
+def test_index_html_chart_and_livetick_fixes():
+    """Verify index.html renders all setups with LONG/SHORT prefixes, caches
+    utcOffset per dataset, and uses incremental series.update() in liveTick()."""
+    from pathlib import Path
+    html = Path("app/dashboard/static/index.html").read_text(encoding="utf-8")
+    assert "utcOffset:null" in html
+    assert "state.utcOffset = null" in html
+    assert "state.utcOffset = (Math.abs(est - offH*3600) <= 900 && est > -5400) ? offH : 2;" in html
+    assert "const setups = a.setups || [];" in html
+    assert "s.direction === 'long' ? 'LONG ' : 'SHORT '" in html
+    assert "state.series.update({ time: c.time, open: c.open, high: c.high, low: c.low, close: c.close });" in html
+    assert "if (newBarAppended) renderBoxes();" in html
+    print("index.html multi-setup lines, cached utcOffset & incremental liveTick OK")
+
+
 if __name__ == "__main__":
     test_detector_fires_on_sweep_engulf()
     test_zone_setups_still_flow()
@@ -815,4 +830,5 @@ if __name__ == "__main__":
     test_csm_endpoint_self_heal_no_nameerror()
     test_mt5_lock_serializes_concurrent_calls()
     test_execution_engine_dynamic_allowed_symbols()
+    test_index_html_chart_and_livetick_fixes()
     print("ALL SMOKE TESTS PASSED")
