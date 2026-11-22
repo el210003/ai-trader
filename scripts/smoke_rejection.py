@@ -312,6 +312,52 @@ def test_multi_swing_book_and_fast_parity():
     print("multi-swing book & FastSMC parity OK")
 
 
+def test_causal_pool_rejection_parity():
+    """Equal-highs/lows pool rejections match bit-for-bit between analyze(df[:i+1])
+    and FastSMC.at(i), including with zero-range bars and shifting close tolerance."""
+    from app.smc.fast_context import FastSMC
+    df, t = base_rows()
+    rows = list(df.values)
+    n = len(df)
+    lvl = 1.1350
+    # Touch 1 at n, dip, Touch 2 at n+4, 3 confirm bars -> confirmed at n+7
+    rows.append([t + n * 900, 1.1340, lvl, 1.1335, 1.1338])
+    rows.append([t + (n + 1) * 900, 1.1338, 1.1340, 1.1325, 1.1328])
+    rows.append([t + (n + 2) * 900, 1.1328, 1.1334, 1.1322, 1.1330])
+    rows.append([t + (n + 3) * 900, 1.1330, 1.1342, 1.1328, 1.1340])
+    rows.append([t + (n + 4) * 900, 1.1340, lvl + 0.0001, 1.1336, 1.1338])
+    for j in range(3):
+        rows.append([t + (n + 5 + j) * 900, 1.1338, 1.1341,
+                     1.1330 - j * 0.0001, 1.1334])
+    # Zero-range bar (h == l) after confirmation
+    rows.append([t + (n + 8) * 900, 1.1334, 1.1334, 1.1334, 1.1334])
+    # Bull bar closing below pool, followed by bear engulf sweeping the equal-highs pool
+    rows.append([t + (n + 9) * 900, lvl - 0.0006, lvl - 0.0002, lvl - 0.0008, lvl - 0.0002])
+    rows.append([t + (n + 10) * 900, lvl - 0.0002, lvl + 0.0008, lvl - 0.0014, lvl - 0.0012])
+    # Subsequent bar sweeping above lvl again must NOT re-emit the consumed pool
+    rows.append([t + (n + 11) * 900, lvl - 0.0012, lvl - 0.0004, lvl - 0.0014, lvl - 0.0004])
+    rows.append([t + (n + 12) * 900, lvl - 0.0004, lvl + 0.0009, lvl - 0.0016, lvl - 0.0014])
+    df2 = mkdf(rows)
+
+    fast = FastSMC(df2, CFG)
+    trig_lb = max(2, int((CFG.get("rejection") or {}).get("trigger_lookback_bars", 2)))
+    for idx in range(n + 6, len(df2)):
+        sub = df2.iloc[:idx + 1].reset_index(drop=True)
+        ref = analyze(sub, CFG)
+        arm_from = idx + 1 - trig_lb
+        ref_tail = [e for e in ref["rejections"] if e["index"] >= arm_from]
+        got = fast.at(idx)
+        assert got["rejections"] == ref_tail, (
+            f"FastSMC rejection parity mismatch at {idx}: got={got['rejections']} vs ref={ref_tail}"
+        )
+    # Verify the equal_highs pool sweep was emitted on bar n+10 and not re-emitted on n+12
+    ev_10 = [e for e in analyze(df2, CFG)["rejections"] if e["index"] == n + 10]
+    assert ev_10 and any(s["kind"] == "equal_highs" for s in ev_10[-1]["swept"]), ev_10
+    ev_12 = [e for e in analyze(df2, CFG)["rejections"] if e["index"] == n + 12]
+    assert not any(s["kind"] == "equal_highs" for e in ev_12 for s in e["swept"]), ev_12
+    print("causal pool rejection parity OK")
+
+
 if __name__ == "__main__":
     test_detector_fires_on_sweep_engulf()
     test_zone_setups_still_flow()
@@ -323,4 +369,5 @@ if __name__ == "__main__":
     test_day_extreme_sweep()
     test_equal_pool_sweep_and_consumption()
     test_multi_swing_book_and_fast_parity()
+    test_causal_pool_rejection_parity()
     print("ALL SMOKE TESTS PASSED")

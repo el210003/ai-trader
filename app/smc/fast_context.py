@@ -125,7 +125,7 @@ class FastSMC:
             trig_lb = max(2, int((cfg.get("rejection") or {}).get(
                 "trigger_lookback_bars", 2)))
             arm_from = i + 1 - trig_lb          # builder breaks past this
-            rej_i = [e for e in rejection_tail(st, i, atr_i, self._rej_window, pools=pools_i)
+            rej_i = [e for e in rejection_tail(st, i, atr_i, self._rej_window)
                      if e["index"] >= arm_from]
         else:
             rej_i = []

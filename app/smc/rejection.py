@@ -164,8 +164,8 @@ def detect_pivots(df, n_swing: int, keep_last: int = 400) -> List[dict]:
     return out[-keep_last:]
 
 
-def detect_rejections(df, pools: List[dict], atr_val: float, cfg: dict,
-                      keep_last: int = 100) -> List[dict]:
+def detect_rejections(df, pools: Optional[List[dict]], atr_val: float, cfg: dict,
+                      keep_last: int = 100, *, tol_pct: Optional[float] = None) -> List[dict]:
     """Single chronological pass over closed bars (ProcessBar order:
     evaluate -> fold day extremes -> break body-closed levels -> add pivots
     confirmed by this bar). Returns rejection events (ascending by bar index,
@@ -206,7 +206,10 @@ def detect_rejections(df, pools: List[dict], atr_val: float, cfg: dict,
     live_highs: List[list] = []      # price-sorted [price, seq] swing highs
     live_lows: List[list] = []       # price-sorted [price, seq] swing lows
     next_seq = 0
-    consumed = set()                 # pool indices closed through
+    static_pools = list(pools or [])
+    consumed = set()                 # static pool indices closed through
+    confirmed_swings: List[dict] = []
+    consumed_causal = set()          # (side, tuple(members)) closed/swept
     # day-extreme book (UpdateDayExtremes): running server-day H/L as of the
     # previous close; never body-broken, reset at server midnight. Seeded with
     # bar 0 (the EA folds every bar, including the first backfill bar).
@@ -245,21 +248,43 @@ def detect_rejections(df, pools: List[dict], atr_val: float, cfg: dict,
                     swept.append((500_000_001, "sellside", "day_low", day_low))
             # equal-highs/lows pools (ai-trader's clustered liquidity;
             # consumed on close-through or sweep, additive to the EA's books)
-            for pi, p in enumerate(pools):
-                if pi in consumed or i < pool_ready_bar(p):
-                    continue
-                if p["side"] == "buyside":
-                    if c[i] > p["price"]:
-                        consumed.add(pi)         # closed through -> dead
-                    elif h[i] > p["price"] and c[i] < p["price"]:
-                        consumed.add(pi)
-                        swept.append((1_000_000_000 + pi, "buyside", "equal_highs", p["price"]))
-                else:
-                    if c[i] < p["price"]:
-                        consumed.add(pi)
-                    elif l[i] < p["price"] and c[i] > p["price"]:
-                        consumed.add(pi)
-                        swept.append((1_000_000_000 + pi, "sellside", "equal_lows", p["price"]))
+            if tol_pct is not None:
+                tol_i = float(c[i - 1]) * float(tol_pct)
+                causal_pools = active_pools_at(confirmed_swings, tol_i)
+                for pi, p in enumerate(causal_pools):
+                    pkey = (p["side"], tuple(p["members"]))
+                    if pkey in consumed_causal or i < pool_ready_bar(p):
+                        continue
+                    lvl = float(p["price"])
+                    if p["side"] == "buyside":
+                        if c[i] > lvl:
+                            consumed_causal.add(pkey)
+                        elif h[i] > lvl and c[i] < lvl:
+                            consumed_causal.add(pkey)
+                            swept.append((1_000_000_000 + pi, "buyside", "equal_highs", lvl))
+                    else:
+                        if c[i] < lvl:
+                            consumed_causal.add(pkey)
+                        elif l[i] < lvl and c[i] > lvl:
+                            consumed_causal.add(pkey)
+                            swept.append((1_000_000_000 + pi, "sellside", "equal_lows", lvl))
+            else:
+                for pi, p in enumerate(static_pools):
+                    if pi in consumed or i < pool_ready_bar(p):
+                        continue
+                    lvl = float(p["price"])
+                    if p["side"] == "buyside":
+                        if c[i] > lvl:
+                            consumed.add(pi)         # closed through -> dead
+                        elif h[i] > lvl and c[i] < lvl:
+                            consumed.add(pi)
+                            swept.append((1_000_000_000 + pi, "buyside", "equal_highs", lvl))
+                    else:
+                        if c[i] < lvl:
+                            consumed.add(pi)
+                        elif l[i] < lvl and c[i] > lvl:
+                            consumed.add(pi)
+                            swept.append((1_000_000_000 + pi, "sellside", "equal_lows", lvl))
             swept.sort()                             # confirmation order (then pools)
 
         # ---- step 1b: engulfing test (noise gate on bar range; sweeps are
@@ -350,9 +375,17 @@ def detect_rejections(df, pools: List[dict], atr_val: float, cfg: dict,
             if is_high:
                 bisect.insort(live_highs, [phv, next_seq])
                 next_seq += 1
+                confirmed_swings.append({
+                    "index": int(p), "time": int(times[p]), "type": "high",
+                    "price": float(phv), "confirmed_at": int(i),
+                })
             if is_low:
                 bisect.insort(live_lows, [plv, next_seq])
                 next_seq += 1
+                confirmed_swings.append({
+                    "index": int(p), "time": int(times[p]), "type": "low",
+                    "price": float(plv), "confirmed_at": int(i),
+                })
 
     return events[-keep_last:]
 
@@ -421,6 +454,7 @@ class RejectionStream:
         self.min_range_atr = float(rj.get("min_range_atr", 0.05))
         self.use_day = bool(rj.get("use_day_extremes", True))
         self.n_swing = max(1, int(cfg.get("swing_lookback", 3)))
+        self.tol_pct = float(cfg.get("eq_tolerance_pct", 0.0006))
 
         o = df["open"].values
         h = df["high"].values
@@ -472,6 +506,8 @@ class RejectionStream:
         live_highs: list = []
         live_lows: list = []
         next_seq = 0
+        confirmed_swings: List[dict] = []
+        consumed_causal = set()
         if n:
             day_stamp = int(times[0]) // 86400
             day_high, day_low, day_has = float(h[0]), float(l[0]), True
@@ -490,6 +526,26 @@ class RejectionStream:
                 k1 = bisect.bisect_left(live_lows, [c[i], -1.0])
                 for e in live_lows[k0:k1]:
                     rec.append((e[1], "sellside", "swing_low", e[0]))
+                tol_i = float(c[i - 1]) * self.tol_pct
+                causal_pools = active_pools_at(confirmed_swings, tol_i)
+                for pi, p in enumerate(causal_pools):
+                    pkey = (p["side"], tuple(p["members"]))
+                    if pkey in consumed_causal or i < pool_ready_bar(p):
+                        continue
+                    lvl = float(p["price"])
+                    if p["side"] == "buyside":
+                        if c[i] > lvl:
+                            consumed_causal.add(pkey)
+                        elif h[i] > lvl and c[i] < lvl:
+                            consumed_causal.add(pkey)
+                            rec.append((1_000_000_000 + pi, "buyside", "equal_highs", lvl))
+                    else:
+                        if c[i] < lvl:
+                            consumed_causal.add(pkey)
+                        elif l[i] < lvl and c[i] > lvl:
+                            consumed_causal.add(pkey)
+                            rec.append((1_000_000_000 + pi, "sellside", "equal_lows", lvl))
+                rec.sort()
             self.book_swept[i] = tuple(rec)
             # fold day extremes AFTER evaluation (ProcessBar order)
             if self.use_day:
@@ -527,15 +583,23 @@ class RejectionStream:
                 if is_high:
                     bisect.insort(live_highs, [phv, next_seq])
                     next_seq += 1
+                    confirmed_swings.append({
+                        "index": int(p), "time": int(times[p]), "type": "high",
+                        "price": float(phv), "confirmed_at": int(i),
+                    })
                 if is_low:
                     bisect.insort(live_lows, [plv, next_seq])
                     next_seq += 1
+                    confirmed_swings.append({
+                        "index": int(p), "time": int(times[p]), "type": "low",
+                        "price": float(plv), "confirmed_at": int(i),
+                    })
 
 
-def rejection_tail(st: RejectionStream, i: int, atr_val: float, window: int,
-                   pools: Optional[List[dict]] = None) -> List[dict]:
+def rejection_tail(st: RejectionStream, i: int, atr_val: float, window: int) -> List[dict]:
     """Rejection events for bars [i-window, i], matching detect_rejections
-    (df[:i+1], pools, atr_val, cfg) including equal-highs/lows pools."""
+    (df[:i+1], None, atr_val, cfg, tol_pct=st.tol_pct) including causal
+    equal-highs/lows pools."""
     min_range = st.min_range_atr * (atr_val or 0.0)
     o, h, l, c, times = st.o, st.h, st.l, st.c, st.times
     hp, lp, cp = st.hp, st.lp, st.cp
@@ -555,27 +619,6 @@ def rejection_tail(st: RejectionStream, i: int, atr_val: float, window: int,
                 swept.append((500_000_000, "buyside", "day_high", st.day_hi[k]))
             if l[k] < st.day_lo[k] and c[k] > st.day_lo[k]:
                 swept.append((500_000_001, "sellside", "day_low", st.day_lo[k]))
-        if pools:
-            for pi, p in enumerate(pools):
-                ready = pool_ready_bar(p)
-                if k < ready:
-                    continue
-                lvl = float(p["price"])
-                # Check if pool was already broken/swept on any bar in [ready, k-1]
-                prior_end = k
-                if ready < prior_end:
-                    if p["side"] == "buyside":
-                        if np.any(c[ready:prior_end] > lvl) or np.any((h[ready:prior_end] > lvl) & (c[ready:prior_end] < lvl)):
-                            continue
-                    else:
-                        if np.any(c[ready:prior_end] < lvl) or np.any((l[ready:prior_end] < lvl) & (c[ready:prior_end] > lvl)):
-                            continue
-                if p["side"] == "buyside":
-                    if h[k] > lvl and c[k] < lvl:
-                        swept.append((1_000_000_000 + pi, "buyside", "equal_highs", lvl))
-                else:
-                    if l[k] < lvl and c[k] > lvl:
-                        swept.append((1_000_000_000 + pi, "sellside", "equal_lows", lvl))
         if not swept:
             continue
         swept.sort()
