@@ -43,10 +43,17 @@ def _smooth(series: pd.Series, ma_len: int, ma_type: str) -> pd.Series:
 
 
 def compute_tf_strength(closes: dict, lookback: int, ma_len: int, ma_type: str,
-                        display: str = "MA", roc_len: int = 1) -> dict:
+                        display: str = "MA", roc_len: int = 1,
+                        min_pairs: int = 10) -> dict:
     """closes: {pair: close-price Series (datetime-indexed)}.
     Returns {currency: latest smoothed strength}."""
     close_df = pd.DataFrame(closes).sort_index()
+    raw_valid_counts = close_df.notna().sum(axis=1)
+    close_df = close_df.ffill(limit=1)
+    # Require actual (non-filled) cross-sectional pair coverage on each bar so
+    # a single early-ticking pair at a TF rollover does not forward-fill 27
+    # stale closes into a spurious tip bar.
+    close_df = close_df[raw_valid_counts >= max(1, int(min_pairs))]
     if len(close_df) < lookback + 2:
         return {}
     z = (close_df - close_df.rolling(lookback).mean()) / close_df.rolling(lookback).std(ddof=0)
@@ -69,7 +76,10 @@ def compute_tf_strength(closes: dict, lookback: int, ma_len: int, ma_type: str,
         ser = _smooth(ser, ma_len, ma_type)
         if display == "ROC":
             ser = ser.diff(max(1, roc_len))
-        out[ccy] = float(ser.iloc[-1])
+        ser_clean = ser.dropna()
+        if ser_clean.empty:
+            return {}
+        out[ccy] = float(ser_clean.iloc[-1])
     return out
 
 
@@ -125,7 +135,7 @@ def update_csm(cfg: dict, store, mt5=None, demo: bool = False,
         pairs_used = max(pairs_used, len(closes))
 
         tf_strength = compute_tf_strength(closes, lookback, ma_len, ma_type,
-                                          display, roc_len)
+                                          display, roc_len, min_pairs=min_pairs)
         if not tf_strength:
             continue
         strength[tf] = tf_strength

@@ -231,8 +231,9 @@ Issues are grouped by **Indicator / SMC / Setup Logic** and **Dashboard Backend 
 
 ---
 
-### 8. [Low] `csm.py` Trailing-Bar Misalignment When One Pair Has a Newer/Older Timestamp
-- **Where:** `app/csm.py:45-70` (`compute_tf_strength`), `app/csm.py:110-128` (`update_csm`)
+### 8. [Low] ~~`csm.py` Trailing-Bar Misalignment When One Pair Has a Newer/Older Timestamp~~ *(Fixed)*
+- **Status:** Implemented & verified (`scripts/smoke_rejection.py` — `test_csm_trailing_bar_alignment`)
+- **Where:** `app/csm.py:42-81` (`compute_tf_strength`), `app/csm.py:132-135` (`update_csm`)
 - **What happens:**
   - `compute_tf_strength` builds `close_df = pd.DataFrame(closes).sort_index()`, which outer-joins up to 28 pairs on bar open timestamp (`time`).
   - During live broker ticks or right at a timeframe rollover (e.g., H1/H4 open), 1 or 2 liquid pairs (such as `EURUSD` or `USDJPY`) often receive the new bar a few hundred milliseconds before minor crosses (`NZDCHF`, `CADCHF`). On that newest timestamp row, `close_df.iloc[-1]` has valid values for 1–2 pairs and `NaN` for the remaining 26–27 pairs.

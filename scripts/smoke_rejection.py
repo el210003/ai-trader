@@ -607,6 +607,34 @@ def test_infer_point_trailing_window_and_override():
     print("infer_point trailing window & override OK")
 
 
+def test_csm_trailing_bar_alignment():
+    """compute_tf_strength drops incomplete tip bars where fewer than min_pairs
+    have real closes, evaluating across the full aligned 28-pair bar instead."""
+    import numpy as np
+    from app.csm import CSM_PAIRS, compute_tf_strength
+
+    rng = np.random.default_rng(42)
+    times = list(range(1000, 1040))
+    closes_aligned = {}
+    for idx, (pair, _b, _q) in enumerate(CSM_PAIRS):
+        base_px = 1.10 + idx * 0.01
+        vals = base_px + np.cumsum(rng.normal(0, 0.0005, size=len(times)))
+        closes_aligned[pair] = pd.Series(vals, index=times)
+
+    ref = compute_tf_strength(closes_aligned, lookback=10, ma_len=5, ma_type="SMA", min_pairs=10)
+    assert len(ref) == 8, ref
+
+    # Add an extra newer bar (t=1040) on EURUSD only (simulating early rollover tick)
+    closes_skewed = dict(closes_aligned)
+    closes_skewed["EURUSD"] = pd.concat([
+        closes_aligned["EURUSD"],
+        pd.Series([float(closes_aligned["EURUSD"].iloc[-1]) + 0.05], index=[1040]),
+    ])
+    got = compute_tf_strength(closes_skewed, lookback=10, ma_len=5, ma_type="SMA", min_pairs=10)
+    assert got == ref, f"CSM skewed by single early-ticking pair: got={got} vs ref={ref}"
+    print("CSM trailing-bar misalignment guard OK")
+
+
 if __name__ == "__main__":
     test_detector_fires_on_sweep_engulf()
     test_zone_setups_still_flow()
@@ -625,4 +653,5 @@ if __name__ == "__main__":
     test_dealing_range_impulse_leg_and_fast_parity()
     test_find_swings_tie_break_matches_detect_pivots()
     test_infer_point_trailing_window_and_override()
+    test_csm_trailing_bar_alignment()
     print("ALL SMOKE TESTS PASSED")
