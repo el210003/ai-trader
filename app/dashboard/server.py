@@ -104,31 +104,32 @@ def create_app(cfg: dict) -> FastAPI:
             last_hb = 0.0
             while True:
                 try:
-                    if mt5 is None and not demo_mode:
-                        mt5 = _m5.connect_mt5(cfg["mt5"])
                     triggers = []
                     peeked = 0
-                    for symbol in visible_symbols():
-                        for tf in cfg["timeframes"]:
-                            key = (symbol, tf)
-                            try:
-                                t = pipeline.peek_last_bar_time(symbol, tf, demo=demo_mode, mt5=mt5)
-                            except Exception as e:
-                                t = None
-                                debug(f"watcher peek failed {symbol} {tf}: {e}")
-                            if t is None:
-                                continue
-                            peeked += 1
-                            prev = last_seen.get(key)
-                            if prev is None:
-                                last_seen[key] = t
-                                if not bootstrapped and store.load_analysis(symbol, tf) is None:
-                                    triggers.append((symbol, tf, t))   # no analysis yet -> analyze now
-                                continue
-                            if prev != t:
-                                triggers.append((symbol, tf, t))       # new bar opened
-                            else:
-                                last_seen[key] = t
+                    with _m5.MT5_LOCK:
+                        if mt5 is None and not demo_mode:
+                            mt5 = _m5.connect_mt5(cfg["mt5"])
+                        for symbol in visible_symbols():
+                            for tf in cfg["timeframes"]:
+                                key = (symbol, tf)
+                                try:
+                                    t = pipeline.peek_last_bar_time(symbol, tf, demo=demo_mode, mt5=mt5)
+                                except Exception as e:
+                                    t = None
+                                    debug(f"watcher peek failed {symbol} {tf}: {e}")
+                                if t is None:
+                                    continue
+                                peeked += 1
+                                prev = last_seen.get(key)
+                                if prev is None:
+                                    last_seen[key] = t
+                                    if not bootstrapped and store.load_analysis(symbol, tf) is None:
+                                        triggers.append((symbol, tf, t))   # no analysis yet -> analyze now
+                                    continue
+                                if prev != t:
+                                    triggers.append((symbol, tf, t))       # new bar opened
+                                else:
+                                    last_seen[key] = t
                     bootstrapped = True
                     if triggers:
                         debug("bar-close triggers: " + ", ".join(
@@ -149,18 +150,19 @@ def create_app(cfg: dict) -> FastAPI:
                         debug(f"processing {len(batch)} bar-close pair(s): "
                               + ", ".join(f"{s} {tf}" for s, tf in batch))
                         state["last_pull"] = {"at": int(t_b)}
-                        # phase 1: pull fresh candles (sequential MT5 IPC)
+                        # phase 1: pull fresh candles (sequential MT5 IPC under lock)
                         pull_fail = set()
-                        for symbol, tf in batch:
-                            try:
-                                df = _m5.fetch_ohlcv(symbol, tf, int(cfg["data"]["bars"]),
-                                                     demo=demo_mode, cfg_mt5=cfg["mt5"], mt5=mt5)
-                                store.upsert_candles(df, symbol, tf)
-                            except Exception as e:
-                                debug(f"pull failed {symbol} {tf}: {e}")
-                                pull_fail.add((symbol, tf))
-                                last_seen[(symbol, tf)] = -1
-                                pair_fail_at[(symbol, tf)] = time.time()
+                        with _m5.MT5_LOCK:
+                            for symbol, tf in batch:
+                                try:
+                                    df = _m5.fetch_ohlcv(symbol, tf, int(cfg["data"]["bars"]),
+                                                         demo=demo_mode, cfg_mt5=cfg["mt5"], mt5=mt5)
+                                    store.upsert_candles(df, symbol, tf)
+                                except Exception as e:
+                                    debug(f"pull failed {symbol} {tf}: {e}")
+                                    pull_fail.add((symbol, tf))
+                                    last_seen[(symbol, tf)] = -1
+                                    pair_fail_at[(symbol, tf)] = time.time()
                         to_analyze = [(s, tf) for s, tf in batch if (s, tf) not in pull_fail]
                         # model freshness: one check per batch (workers load the
                         # model file per task, so retrains are picked up)
@@ -170,7 +172,8 @@ def create_app(cfg: dict) -> FastAPI:
                                                               verbose=debug_enabled(cfg))
                             except Exception as e:
                                 debug(f"ensure_model_current failed: {e}")
-                        # phase 2: analyses in the process pool (true CPU parallelism)
+                        # phase 2: analyses in the process pool (true CPU parallelism;
+                        # MT5_LOCK released while workers run off stored candles)
                         results = []
                         pool = pipeline._analysis_pool(cfg)
                         if pool is not None and len(to_analyze) > 1:
@@ -180,9 +183,10 @@ def create_app(cfg: dict) -> FastAPI:
                         else:
                             for s, tf in to_analyze:
                                 try:
-                                    pipeline.refresh_pair(cfg, store, s, tf, mt5, ml, llm,
-                                                          symbol_stats, drop_forming_bar=True,
-                                                          demo=demo_mode)
+                                    if symbol_stats:
+                                        symbol_stats.invalidate(s)
+                                    pipeline.analyze_symbol(store, s, tf, cfg, ml, llm,
+                                                            symbol_stats, drop_last_bar=True)
                                     results.append({"symbol": s, "tf": tf, "ok": True})
                                 except Exception as e:
                                     results.append({"symbol": s, "tf": tf, "ok": False, "error": str(e)})
@@ -204,7 +208,8 @@ def create_app(cfg: dict) -> FastAPI:
                     # refresh the CSM snapshot when bars closed (throttled internally)
                     if batch:
                         try:
-                            pipeline.update_csm(cfg, store, mt5=mt5, demo=demo_mode)
+                            with _m5.MT5_LOCK:
+                                pipeline.update_csm(cfg, store, mt5=mt5, demo=demo_mode)
                         except Exception as e:
                             state["last_error"] = f"csm update: {e}"
                         # resolve outcomes of previously journaled setups
@@ -427,8 +432,9 @@ def create_app(cfg: dict) -> FastAPI:
         bar-close watcher. Analysis keeps using closed bars only
         (analyze_symbol drop_last_bar=True) - this never triggers analysis."""
         try:
-            df = mt5_client.fetch_ohlcv(symbol, tf, 3, demo=demo_mode,
-                                        cfg_mt5=cfg["mt5"], mt5=None)
+            with mt5_client.mt5_session(cfg["mt5"], demo=demo_mode) as _mt5:
+                df = mt5_client.fetch_ohlcv(symbol, tf, 3, demo=demo_mode,
+                                            cfg_mt5=cfg["mt5"], mt5=_mt5)
             if df is None or df.empty:
                 return JSONResponse(
                     {"error": f"no live data for {symbol} {tf}"}, status_code=404)
@@ -470,16 +476,12 @@ def create_app(cfg: dict) -> FastAPI:
         if snap is None or time.time() - snap.get("generated_at", 0) > max_age:
             if _csm_lock.acquire(blocking=False):
                 def _csm_work():
-                    _mt5 = None
                     try:
-                        if not demo_mode:
-                            _mt5 = mt5_client.connect_mt5(cfg["mt5"])
-                        pipeline.update_csm(cfg, store, mt5=_mt5, demo=demo_mode)
+                        with mt5_client.mt5_session(cfg["mt5"], demo=demo_mode) as _mt5:
+                            pipeline.update_csm(cfg, store, mt5=_mt5, demo=demo_mode)
                     except Exception as e:
                         debug(f"[csm] background refresh failed: {e}")
                     finally:
-                        if _mt5 is not None:
-                            mt5_client.shutdown_mt5(_mt5)
                         _csm_lock.release()
                 threading.Thread(target=_csm_work, daemon=True).start()
         return snap or {"strength": {}, "aligned": {}, "transitions": [],

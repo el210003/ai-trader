@@ -5,11 +5,16 @@ The real feed requires MetaTrader 5 running locally on Windows
 The demo feed generates deterministic synthetic OHLC so the whole
 pipeline + dashboard can be developed/tested without a terminal.
 """
+from contextlib import contextmanager
+import threading
 import time
 import zlib
 
 import numpy as np
 import pandas as pd
+
+MT5_LOCK = threading.RLock()
+_SHARED_MT5 = None
 
 # MetaTrader5 timeframe constants (numeric values are stable across versions)
 TF_CONST = {
@@ -26,50 +31,79 @@ TF_SECONDS = {
 
 # ---------------------------------------------------------------- MT5 feed
 def connect_mt5(cfg_mt5: dict):
-    try:
-        import MetaTrader5 as mt5
-    except ImportError as e:
-        raise RuntimeError(
-            "MetaTrader5 package not installed. On Windows: pip install MetaTrader5. "
-            "Or run with --demo to use synthetic data."
-        ) from e
+    with MT5_LOCK:
+        try:
+            import MetaTrader5 as mt5
+        except ImportError as e:
+            raise RuntimeError(
+                "MetaTrader5 package not installed. On Windows: pip install MetaTrader5. "
+                "Or run with --demo to use synthetic data."
+            ) from e
 
-    kwargs = {}
-    if cfg_mt5.get("terminal_path"):
-        kwargs["path"] = cfg_mt5["terminal_path"]
-    if cfg_mt5.get("login"):
-        kwargs.update(
-            login=int(cfg_mt5["login"]),
-            password=cfg_mt5.get("password") or "",
-            server=cfg_mt5.get("server") or "",
-        )
-    if cfg_mt5.get("timeout"):
-        kwargs["timeout"] = int(cfg_mt5["timeout"])
+        kwargs = {}
+        if cfg_mt5.get("terminal_path"):
+            kwargs["path"] = cfg_mt5["terminal_path"]
+        if cfg_mt5.get("login"):
+            kwargs.update(
+                login=int(cfg_mt5["login"]),
+                password=cfg_mt5.get("password") or "",
+                server=cfg_mt5.get("server") or "",
+            )
+        if cfg_mt5.get("timeout"):
+            kwargs["timeout"] = int(cfg_mt5["timeout"])
 
-    if not mt5.initialize(**kwargs):
-        raise RuntimeError(f"MT5 initialize() failed: {mt5.last_error()}")
-    return mt5
+        if not mt5.initialize(**kwargs):
+            raise RuntimeError(f"MT5 initialize() failed: {mt5.last_error()}")
+        return mt5
 
 
 def fetch_ohlcv_mt5(mt5, symbol: str, tf: str, bars: int) -> pd.DataFrame:
-    rates = mt5.copy_rates_from_pos(symbol, TF_CONST[tf], 0, bars)
-    if rates is None or len(rates) == 0:
-        err = mt5.last_error()
-        raise RuntimeError(
-            f"No rates returned for {symbol} {tf} (error {err}). "
-            "Check the symbol exists in Market Watch and the terminal is logged in."
-        )
-    df = pd.DataFrame(rates)
-    df = df.rename(columns={"tick_volume": "volume"})
-    df["time"] = df["time"].astype("int64")
-    return df[["time", "open", "high", "low", "close", "volume"]]
+    with MT5_LOCK:
+        rates = mt5.copy_rates_from_pos(symbol, TF_CONST[tf], 0, bars)
+        if rates is None or len(rates) == 0:
+            err = mt5.last_error()
+            raise RuntimeError(
+                f"No rates returned for {symbol} {tf} (error {err}). "
+                "Check the symbol exists in Market Watch and the terminal is logged in."
+            )
+        df = pd.DataFrame(rates)
+        df = df.rename(columns={"tick_volume": "volume"})
+        df["time"] = df["time"].astype("int64")
+        return df[["time", "open", "high", "low", "close", "volume"]]
 
 
 def shutdown_mt5(mt5) -> None:
-    try:
-        mt5.shutdown()
-    except Exception:
-        pass
+    global _SHARED_MT5
+    with MT5_LOCK:
+        if mt5 is _SHARED_MT5:
+            _SHARED_MT5 = None
+        try:
+            if mt5 is not None:
+                mt5.shutdown()
+        except Exception:
+            pass
+
+
+@contextmanager
+def mt5_session(cfg_mt5: dict = None, demo: bool = False):
+    """Serialize access to the process-global MetaTrader5 IPC pipe across
+    threads, reusing one initialized handle so short requests do not tear down
+    active IPC sessions on other threads."""
+    global _SHARED_MT5
+    if demo:
+        yield None
+        return
+    with MT5_LOCK:
+        if _SHARED_MT5 is None:
+            _SHARED_MT5 = connect_mt5(cfg_mt5 or {})
+        try:
+            yield _SHARED_MT5
+        except Exception:
+            stale = _SHARED_MT5
+            _SHARED_MT5 = None
+            if stale is not None:
+                shutdown_mt5(stale)
+            raise
 
 
 # ------------------------------------------------------------- discovery
@@ -209,6 +243,7 @@ def demo_ohlcv(symbol: str, tf: str, bars: int, seed: int = None) -> pd.DataFram
 def fetch_ohlcv(symbol: str, tf: str, bars: int, demo: bool, cfg_mt5: dict = None, mt5=None):
     if demo:
         return demo_ohlcv(symbol, tf, bars)
-    if mt5 is None:
-        mt5 = connect_mt5(cfg_mt5 or {})
-    return fetch_ohlcv_mt5(mt5, symbol, tf, bars)
+    if mt5 is not None:
+        return fetch_ohlcv_mt5(mt5, symbol, tf, bars)
+    with mt5_session(cfg_mt5 or {}, demo=False) as shared_mt5:
+        return fetch_ohlcv_mt5(shared_mt5, symbol, tf, bars)

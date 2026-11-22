@@ -258,7 +258,7 @@ Issues are grouped by **Indicator / SMC / Setup Logic** and **Dashboard Backend 
 ## Part 2 — Dashboard Backend & Frontend Issues
 
 ### 9. [High] ~~`NameError: name 'mt5' is not defined` Breaks `/api/csm` Self-Heal Refresh~~ *(Fixed)*
-- **Status:** Implemented & verified (`scripts/smoke_rejection.py` — `test_csm_endpoint_self_heal_no_nameerror`; note: Item 10 will upgrade this to `mt5_client.mt5_session` once introduced)
+- **Status:** Implemented & verified (`scripts/smoke_rejection.py` — `test_csm_endpoint_self_heal_no_nameerror`, using `mt5_client.mt5_session`)
 - **Where:** `app/dashboard/server.py:420-436` (`csm_data` -> `_csm_work`)
 - **What happens:**
   - Inside `csm_data()` -> `_csm_work()`, `pipeline.update_csm(cfg, store, mt5=mt5, demo=demo_mode)` references an undefined variable `mt5` (which only exists in `_bar_watcher`'s local scope at `app/dashboard/server.py:85`).
@@ -283,8 +283,9 @@ Issues are grouped by **Indicator / SMC / Setup Logic** and **Dashboard Backend 
 
 ---
 
-### 10. [High] Unsynchronized Concurrent `MetaTrader5` IPC Calls Across `/api/live`, `_bar_watcher`, and `ExecutionEngine`
-- **Where:** `app/dashboard/server.py:84-212` (`_bar_watcher`), `app/dashboard/server.py:381-399` (`live`), `app/data/mt5_client.py:29-78` (`connect_mt5`, `fetch_ohlcv`, `shutdown_mt5`), `app/execution/executor.py:250-350` (`ExecutionEngine.scan_once`)
+### 10. [High] ~~Unsynchronized Concurrent `MetaTrader5` IPC Calls Across `/api/live`, `_bar_watcher`, and `ExecutionEngine`~~ *(Fixed)*
+- **Status:** Implemented & verified (`scripts/smoke_rejection.py` — `test_mt5_lock_serializes_concurrent_calls`)
+- **Where:** `app/dashboard/server.py:92-235` (`_bar_watcher`), `app/dashboard/server.py:390-412` (`live`), `app/dashboard/server.py:432-442` (`_csm_work`), `app/data/mt5_client.py:16-123` (`MT5_LOCK`, `mt5_session`, `connect_mt5`, `fetch_ohlcv`, `shutdown_mt5`), `app/execution/executor.py:249-290` (`ExecutionEngine.scan_once`, `status`, `flatten`)
 - **What happens:**
   - The `MetaTrader5` Python C-extension wraps a single process-global IPC pipe to the MT5 terminal; `import MetaTrader5 as mt5` returns the exact same module singleton across all threads.
   - Currently:

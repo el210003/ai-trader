@@ -24,6 +24,7 @@ import time
 from collections import Counter
 from pathlib import Path
 
+from ..data import mt5_client
 from ..logsetup import debug
 from . import mt5_trader
 
@@ -272,34 +273,35 @@ class ExecutionEngine:
 
         skipped = Counter()
         actions = []
-        for s in cands:
-            summary["considered"] += 1
+        with mt5_client.MT5_LOCK:
+            for s in cands:
+                summary["considered"] += 1
+                try:
+                    res = self.evaluate_and_execute(s)
+                except Exception as e:
+                    res = {"status": "error", "reason": str(e),
+                           "symbol": s.get("symbol"), "direction": s.get("direction")}
+                if res["status"] in ("filled", "placed", "dry_run", "rejected", "error"):
+                    actions.append(res)
+                    if self.verbose:
+                        debug(f"[execution] {res['status'].upper()} {res.get('symbol')} "
+                              f"{res.get('direction')} {res.get('lot', '')} "
+                              f"{res.get('reason') or res.get('price', '')}")
+                else:
+                    skipped[res.get("reason", "?")] += 1
+            summary["actions"], summary["skipped"] = actions, dict(skipped)
+            self.state["scans"] += 1
+            self.state["executed"] += len(actions)
+            self.state["skipped"] += sum(skipped.values())
+            self.state["last_scan"] = {"at": summary["at"], "considered": summary["considered"],
+                                       "actions": len(actions), "skipped": dict(skipped)}
+            self.state["last_error"] = None
+            # housekeeping: cancel stale limit orders (portable expiry — some
+            # brokers reject ORDER_TIME_SPECIFIED, so the engine enforces it)
             try:
-                res = self.evaluate_and_execute(s)
+                self._expire_pendings()
             except Exception as e:
-                res = {"status": "error", "reason": str(e),
-                       "symbol": s.get("symbol"), "direction": s.get("direction")}
-            if res["status"] in ("filled", "placed", "dry_run", "rejected", "error"):
-                actions.append(res)
-                if self.verbose:
-                    debug(f"[execution] {res['status'].upper()} {res.get('symbol')} "
-                          f"{res.get('direction')} {res.get('lot', '')} "
-                          f"{res.get('reason') or res.get('price', '')}")
-            else:
-                skipped[res.get("reason", "?")] += 1
-        summary["actions"], summary["skipped"] = actions, dict(skipped)
-        self.state["scans"] += 1
-        self.state["executed"] += len(actions)
-        self.state["skipped"] += sum(skipped.values())
-        self.state["last_scan"] = {"at": summary["at"], "considered": summary["considered"],
-                                   "actions": len(actions), "skipped": dict(skipped)}
-        self.state["last_error"] = None
-        # housekeeping: cancel stale limit orders (portable expiry — some
-        # brokers reject ORDER_TIME_SPECIFIED, so the engine enforces it)
-        try:
-            self._expire_pendings()
-        except Exception as e:
-            debug(f"[execution] pending expiry: {e}")
+                debug(f"[execution] pending expiry: {e}")
         return summary
 
     def _expire_pendings(self):
@@ -541,12 +543,13 @@ class ExecutionEngine:
         if not self.enabled:
             return out
         try:
-            mt5 = self._connect()
-            out["account"] = mt5_trader.account_snapshot(mt5)
-            out["positions"] = [mt5_trader.position_dict(p)
-                                for p in mt5_trader.bot_positions(mt5, self.magic)]
-            out["pendings"] = [mt5_trader.order_dict(o)
-                               for o in mt5_trader.bot_pendings(mt5, self.magic)]
+            with mt5_client.MT5_LOCK:
+                mt5 = self._connect()
+                out["account"] = mt5_trader.account_snapshot(mt5)
+                out["positions"] = [mt5_trader.position_dict(p)
+                                    for p in mt5_trader.bot_positions(mt5, self.magic)]
+                out["pendings"] = [mt5_trader.order_dict(o)
+                                   for o in mt5_trader.bot_pendings(mt5, self.magic)]
         except Exception as e:
             out["mt5_error"] = str(e)
         return out
@@ -555,16 +558,17 @@ class ExecutionEngine:
         """Panic button: close every bot position and cancel every bot pending.
         Never touches manual trades (magic-number filter)."""
         closed, canceled, errors = [], [], []
-        try:
-            mt5 = self._connect()
-        except Exception as e:
-            return {"closed": [], "canceled": [], "errors": [str(e)]}
-        for p in mt5_trader.bot_positions(mt5, self.magic):
-            r = mt5_trader.close_position(mt5, p, self.magic, "flatten")
-            (closed if r["ok"] else errors).append(
-                {"ticket": int(p.ticket), "symbol": p.symbol, **r})
-        for o in mt5_trader.bot_pendings(mt5, self.magic):
-            r = mt5_trader.cancel_order(mt5, int(o.ticket))
-            (canceled if r["ok"] else errors).append(
-                {"ticket": int(o.ticket), "symbol": o.symbol, **r})
+        with mt5_client.MT5_LOCK:
+            try:
+                mt5 = self._connect()
+            except Exception as e:
+                return {"closed": [], "canceled": [], "errors": [str(e)]}
+            for p in mt5_trader.bot_positions(mt5, self.magic):
+                r = mt5_trader.close_position(mt5, p, self.magic, "flatten")
+                (closed if r["ok"] else errors).append(
+                    {"ticket": int(p.ticket), "symbol": p.symbol, **r})
+            for o in mt5_trader.bot_pendings(mt5, self.magic):
+                r = mt5_trader.cancel_order(mt5, int(o.ticket))
+                (canceled if r["ok"] else errors).append(
+                    {"ticket": int(o.ticket), "symbol": o.symbol, **r})
         return {"closed": closed, "canceled": canceled, "errors": errors}

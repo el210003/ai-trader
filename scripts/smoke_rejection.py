@@ -675,26 +675,75 @@ def test_csm_endpoint_self_heal_no_nameerror():
             called["mt5"] = mt5
             called["demo"] = demo
 
-        with patch.object(mt5_client, "connect_mt5", side_effect=fake_connect), \
+        with patch.object(mt5_client, "_SHARED_MT5", None), \
+             patch.object(mt5_client, "connect_mt5", side_effect=fake_connect), \
              patch.object(mt5_client, "shutdown_mt5", side_effect=fake_shutdown), \
              patch.object(pipeline, "update_csm", side_effect=fake_update):
             client = TestClient(app)
             resp = client.get("/api/csm")
             assert resp.status_code == 200
             for _ in range(50):
-                if "shutdown" in called:
+                if "mt5" in called:
                     break
                 time.sleep(0.02)
 
         assert called.get("connected") is True, called
         assert called.get("mt5") is sentinel_mt5, called
         assert called.get("demo") is False, called
-        assert called.get("shutdown") is sentinel_mt5, called
     finally:
         import gc, shutil
         gc.collect()
         shutil.rmtree(tmpdir, ignore_errors=True)
     print("csm endpoint self-heal refresh OK")
+
+
+def test_mt5_lock_serializes_concurrent_calls():
+    """MT5_LOCK and mt5_session serialize concurrent IPC calls across threads."""
+    import threading
+    import time
+    from unittest.mock import patch
+    from app.data import mt5_client
+
+    active = 0
+    max_active = 0
+    guard = threading.Lock()
+
+    class FakeMT5:
+        def copy_rates_from_pos(self, symbol, tf, start, bars):
+            nonlocal active, max_active
+            with guard:
+                active += 1
+                max_active = max(max_active, active)
+            time.sleep(0.01)
+            with guard:
+                active -= 1
+            return [
+                {"time": 1_700_000_000, "open": 1.1, "high": 1.2, "low": 1.0, "close": 1.15, "tick_volume": 10},
+            ]
+
+        def last_error(self):
+            return (0, "ok")
+
+        def shutdown(self):
+            pass
+
+    fake = FakeMT5()
+
+    def worker():
+        with mt5_client.mt5_session({}, demo=False) as m:
+            df = mt5_client.fetch_ohlcv("EURUSD", "M15", 1, demo=False, mt5=m)
+            assert len(df) == 1
+
+    with patch.object(mt5_client, "_SHARED_MT5", None), \
+         patch.object(mt5_client, "connect_mt5", return_value=fake):
+        threads = [threading.Thread(target=worker) for _ in range(8)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+    assert max_active == 1, f"Concurrent MT5 IPC overlap detected: max_active={max_active}"
+    print("MT5_LOCK & mt5_session concurrency serialization OK")
 
 
 if __name__ == "__main__":
@@ -717,4 +766,5 @@ if __name__ == "__main__":
     test_infer_point_trailing_window_and_override()
     test_csm_trailing_bar_alignment()
     test_csm_endpoint_self_heal_no_nameerror()
+    test_mt5_lock_serializes_concurrent_calls()
     print("ALL SMOKE TESTS PASSED")
