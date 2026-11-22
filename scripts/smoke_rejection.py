@@ -825,6 +825,113 @@ def test_index_html_delegated_clicks_and_esc():
     print("index.html delegated click handlers & single-quote escaping OK")
 
 
+def test_symbol_selection_mtime_and_ranked_filter():
+    """Verify SymbolSelection reloads on external file mtime changes under lock,
+    GET /api/setups/ranked excludes disabled symbols, and loadJournal covers 0-100%."""
+    import json
+    import os
+    import tempfile
+    import threading
+    import time
+    from pathlib import Path
+    from fastapi.testclient import TestClient
+    from app.symbol_selection import SymbolSelection
+    from app.dashboard.server import create_app
+    from app.data.store import Store
+
+    tmpdir = tempfile.mkdtemp()
+    try:
+        sel_path = Path(tmpdir) / "symbol_selection.json"
+        sel = SymbolSelection(str(sel_path))
+        assert sel.is_enabled("EURUSD") is True
+        assert sel.enabled_list(["EURUSD", "GBPUSD"]) == ["EURUSD", "GBPUSD"]
+
+        # External write (simulating CLI edit)
+        sel_path.write_text(json.dumps({"enabled": ["EURUSD"]}), encoding="utf-8")
+        os.utime(sel_path, (time.time() + 5, time.time() + 5))
+        assert sel.get() == ["EURUSD"]
+        assert sel.is_enabled("EURUSD") is True
+        assert sel.is_enabled("GBPUSD") is False
+        assert sel.enabled_list(["EURUSD", "GBPUSD"]) == ["EURUSD"]
+
+        # Concurrent reads/writes stay consistent
+        errors = []
+        def reader():
+            try:
+                for _ in range(30):
+                    _ = sel.is_enabled("EURUSD")
+                    _ = sel.get()
+            except Exception as e:
+                errors.append(e)
+
+        def writer():
+            try:
+                for i in range(15):
+                    sel.set(["EURUSD"] if i % 2 == 0 else ["EURUSD", "GBPUSD"])
+            except Exception as e:
+                errors.append(e)
+
+        threads = [threading.Thread(target=reader) for _ in range(4)] + [threading.Thread(target=writer)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        assert not errors, errors
+
+        # External deletion resets to default (all enabled)
+        sel_path.unlink()
+        assert sel.get() == []
+        assert sel.is_enabled("GBPUSD") is True
+
+        # GET /api/setups/ranked filters out disabled symbols
+        db_path = f"{tmpdir}/test.db"
+        store = Store(db_path)
+        now = int(time.time())
+        for sym, score in (("EURUSD", 85.0), ("GBPUSD", 92.0)):
+            store.save_analysis(sym, "M15", {
+                "generated_at": now,
+                "setups": [{
+                    "direction": "long", "verdict": "BUY", "entry": 1.1000,
+                    "stop_loss": 1.0980, "take_profit": 1.1040, "rr": 2.0,
+                    "final_score": score, "ml_prob": 0.85,
+                    "entry_zone": {"origin_time": now - 900},
+                }],
+            })
+        store.conn.close()
+
+        sel_path.write_text(json.dumps({"enabled": ["EURUSD"]}), encoding="utf-8")
+        cfg = {
+            "symbols": ["EURUSD", "GBPUSD"],
+            "timeframes": ["M15"],
+            "mt5": {},
+            "smc": CFG,
+            "csm": {"enabled": False},
+            "ai": {"ml": {"model_path": f"{tmpdir}/missing.joblib"}, "llm": {"enabled": False}},
+            "storage": {"path": db_path},
+            "symbol_selection": {"path": str(sel_path)},
+            "dashboard": {"bar_close_watcher": False, "auto_run_interval": 0},
+            "execution": {"enabled": False},
+            "_demo": False,
+        }
+        app = create_app(cfg)
+        client = TestClient(app)
+        resp = client.get("/api/setups/ranked")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["total"] == 1 and body["pairs"] == 1, body
+        assert [r["symbol"] for r in body["rows"]] == ["EURUSD"], body
+
+        # index.html loadJournal covers 0-100% ML calibration buckets
+        html = Path("app/dashboard/static/index.html").read_text(encoding="utf-8")
+        assert "[[80,100],[70,80],[60,70],[50,60],[40,50],[30,40],[20,30],[10,20],[0,10]]" in html
+        assert "(hi === 100 ? pct <= 100 : pct < hi)" in html
+    finally:
+        import gc, shutil
+        gc.collect()
+        shutil.rmtree(tmpdir, ignore_errors=True)
+    print("SymbolSelection mtime reload, ranked disabled filter & 0-100% calibration buckets OK")
+
+
 if __name__ == "__main__":
     test_detector_fires_on_sweep_engulf()
     test_zone_setups_still_flow()
@@ -849,4 +956,5 @@ if __name__ == "__main__":
     test_execution_engine_dynamic_allowed_symbols()
     test_index_html_chart_and_livetick_fixes()
     test_index_html_delegated_clicks_and_esc()
+    test_symbol_selection_mtime_and_ranked_filter()
     print("ALL SMOKE TESTS PASSED")

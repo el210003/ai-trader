@@ -37,7 +37,8 @@ def create_app(cfg: dict) -> FastAPI:
     discovered_meta = {d["symbol"]: d for d in load_discovered_symbols(cache_path)}
 
     # Persistent per-symbol enable/disable selection
-    selection = SymbolSelection("data/symbol_selection.json")
+    selection_path = (cfg.get("symbol_selection") or {}).get("path", "data/symbol_selection.json")
+    selection = SymbolSelection(selection_path)
 
     def visible_symbols() -> list:
         return selection.enabled_list(resolved)
@@ -489,10 +490,13 @@ def create_app(cfg: dict) -> FastAPI:
 
     @app.get("/api/setups/ranked")
     def ranked_setups(limit: int = 30):
-        """All current setups across every analyzed pair, ranked by hybrid score."""
+        """All current setups across enabled analyzed pairs, ranked by hybrid score."""
+        allowed = set(visible_symbols())
         rows = []
         pairs = 0
         for entry in store.list_analyses():
+            if entry["symbol"] not in allowed:
+                continue
             payload = store.load_analysis(entry["symbol"], entry["tf"])
             if not payload:
                 continue

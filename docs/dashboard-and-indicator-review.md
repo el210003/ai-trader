@@ -370,8 +370,9 @@ Issues are grouped by **Indicator / SMC / Setup Logic** and **Dashboard Backend 
 
 ---
 
-### 14. [Low] Journal ML Calibration Chart Drops `> 60%` Setups & Ranked Tab Shows Disabled Symbols
-- **Where:** `app/dashboard/static/index.html:1264-1275` (`loadJournal` calibration buckets), `app/dashboard/server.py:436-455` (`ranked_setups`), `app/symbol_selection.py:21-69` (`SymbolSelection`)
+### 14. [Low] ~~Journal ML Calibration Chart Drops `> 60%` Setups & Ranked Tab Shows Disabled Symbols~~ *(Fixed)*
+- **Status:** Implemented & verified (`scripts/smoke_rejection.py` — `test_symbol_selection_mtime_and_ranked_filter`)
+- **Where:** `app/dashboard/static/index.html:1264-1275` (`loadJournal` calibration buckets), `app/dashboard/server.py:490-516` (`ranked_setups`), `app/symbol_selection.py:21-81` (`SymbolSelection`)
 - **What happens:**
   1. `loadJournal()` (`app/dashboard/static/index.html:1264`) hardcodes `buckets = [[50,60],[40,50],[30,40],[20,30],[10,20],[0,10]]` with `hi===60?1:0`, silently dropping every setup with `ml_prob > 0.61` from the signal-density histogram.
   2. `/api/setups/ranked` (`app/dashboard/server.py:440`) iterates over all `store.list_analyses()` without filtering by `visible_symbols()`, leaking previously analyzed but currently disabled symbols into the Ranked tab.

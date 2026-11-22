@@ -11,6 +11,7 @@ Used by:
 import json
 import threading
 from pathlib import Path
+from typing import Optional
 
 
 class SymbolSelection:
@@ -20,46 +21,64 @@ class SymbolSelection:
         self._lock = threading.Lock()
         self._enabled: set = set()
         self._loaded = False
-        self._load()
+        self._mtime: Optional[float] = None
+        with self._lock:
+            self._load()
 
     # --------------------------------------------------------------- I/O
+    def _stat_mtime(self) -> Optional[float]:
+        try:
+            return self.path.stat().st_mtime
+        except FileNotFoundError:
+            return None
+
     def _load(self):
-        if self.path.exists():
+        mtime = self._stat_mtime()
+        if mtime is not None:
             try:
                 with open(self.path, "r", encoding="utf-8") as f:
                     data = json.load(f)
                 self._enabled = set(data.get("enabled", []))
             except Exception:
                 self._enabled = set()
+        else:
+            self._enabled = set()
+        self._mtime = mtime
         self._loaded = True
+
+    def _ensure_fresh(self):
+        if not self._loaded or self._stat_mtime() != self._mtime:
+            self._load()
 
     def _save(self):
         with open(self.path, "w", encoding="utf-8") as f:
             json.dump({"enabled": sorted(self._enabled)}, f, indent=2)
+        self._mtime = self._stat_mtime()
+        self._loaded = True
 
     # -------------------------------------------------------------- public
     def is_enabled(self, symbol: str) -> bool:
         """If no selection file exists yet, all symbols are enabled.
         If a file exists, only the symbols in `enabled` are enabled."""
-        if not self._loaded:
-            self._load()
-        if not self._enabled:
-            # No explicit selection -> default policy: enable everything
-            return True
-        return symbol in self._enabled
+        with self._lock:
+            self._ensure_fresh()
+            if not self._enabled:
+                # No explicit selection -> default policy: enable everything
+                return True
+            return symbol in self._enabled
 
     def enabled_list(self, all_symbols: list) -> list:
         """Return the subset of `all_symbols` that is currently enabled."""
-        if not self._loaded:
-            self._load()
-        if not self._enabled:
-            return list(all_symbols)
-        return [s for s in all_symbols if s in self._enabled]
+        with self._lock:
+            self._ensure_fresh()
+            if not self._enabled:
+                return list(all_symbols)
+            return [s for s in all_symbols if s in self._enabled]
 
     def get(self) -> list:
-        if not self._loaded:
-            self._load()
-        return sorted(self._enabled)
+        with self._lock:
+            self._ensure_fresh()
+            return sorted(self._enabled)
 
     def set(self, symbols: list):
         with self._lock:
