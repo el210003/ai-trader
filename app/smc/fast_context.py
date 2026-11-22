@@ -41,16 +41,15 @@ class FastSMC:
         self.swings = find_swings(df, lookback)
         self.events, _ = detect_structure(df, self.swings)
 
-        close = float(df["close"].iloc[-1])
-        tol = close * float(cfg.get("eq_tolerance_pct", 0.0006))
-        pools_full = (cluster_equal_levels(self.swings, "buyside", tol)
-                      + cluster_equal_levels(self.swings, "sellside", tol))
-        self.sweeps = detect_sweeps(df, self.swings, pools_full)
+        self.tol_pct = float(cfg.get("eq_tolerance_pct", 0.0006))
+        use_day_extremes = bool((cfg.get("rejection") or {}).get("use_day_extremes", True))
+        self.sweeps = detect_sweeps(
+            df, self.swings, tol_pct=self.tol_pct, use_day_extremes=use_day_extremes,
+        )
         self.obs = find_order_blocks(df, self.events, int(cfg.get("ob_max_age_bars", 300)))
         self.fvgs = find_fvgs(df)
         self.ob_max = int(cfg.get("ob_max_age_bars", 300))
         self.fvg_max = int(cfg.get("fvg_max_age_bars", 200))
-        self.tol_pct = float(cfg.get("eq_tolerance_pct", 0.0006))
 
         # causal ATR series: ewm is bar-causal, so value at i == prefix ATR
         h, l, c = df["high"], df["low"], df["close"]
@@ -97,6 +96,8 @@ class FastSMC:
                     "price": float(np.mean([g["price"] for g in group])),
                     "touches": len(group),
                     "last_time": int(max(g["time"] for g in group)),
+                    "last_index": int(max(g["index"] for g in group)),
+                    "last_confirmed_at": int(max(int(g.get("confirmed_at", g["index"])) for g in group)),
                     "members": [int(g["index"]) for g in group],
                 })
         pools.sort(key=lambda p: p["price"])
@@ -124,7 +125,7 @@ class FastSMC:
             trig_lb = max(2, int((cfg.get("rejection") or {}).get(
                 "trigger_lookback_bars", 2)))
             arm_from = i + 1 - trig_lb          # builder breaks past this
-            rej_i = [e for e in rejection_tail(st, i, atr_i, self._rej_window)
+            rej_i = [e for e in rejection_tail(st, i, atr_i, self._rej_window, pools=pools_i)
                      if e["index"] >= arm_from]
         else:
             rej_i = []

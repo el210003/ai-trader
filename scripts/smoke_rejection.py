@@ -243,6 +243,75 @@ def test_directional_filter():
     print(f"directional filter OK: {len(rej)} short setup(s), buyside sweep")
 
 
+def test_equal_pool_sweep_and_consumption():
+    """Equal-highs pool sweeps fire once confirmed (not blocked by epoch timestamp)
+    and are consumed so they do not re-fire on subsequent bars."""
+    df, t = base_rows()
+    rows = list(df.values)
+    n = len(df)
+    lvl = 1.1350
+    # Touch 1 at n, dip, Touch 2 at n+4, then 3 confirmation bars (lookback=3 -> confirmed at n+7)
+    rows.append([t + n * 900, 1.1340, lvl, 1.1335, 1.1338])
+    rows.append([t + (n + 1) * 900, 1.1338, 1.1340, 1.1325, 1.1328])
+    rows.append([t + (n + 2) * 900, 1.1328, 1.1334, 1.1322, 1.1330])
+    rows.append([t + (n + 3) * 900, 1.1330, 1.1342, 1.1328, 1.1340])
+    rows.append([t + (n + 4) * 900, 1.1340, lvl + 0.0001, 1.1336, 1.1338])
+    for j in range(3):
+        rows.append([t + (n + 5 + j) * 900, 1.1338, 1.1341,
+                     1.1330 - j * 0.0001, 1.1334])
+    df2 = mkdf(rows)
+    # Bar n+8: wick sweeps equal highs and closes back below
+    rows = list(df2.values)
+    n2 = len(df2)
+    rows.append([t + n2 * 900, 1.1334, lvl + 0.0009, 1.1330, lvl - 0.0005])
+    # Bar n+9: another wick above lvl must NOT re-emit the consumed pool
+    rows.append([t + (n2 + 1) * 900, lvl - 0.0005, lvl + 0.0007, lvl - 0.0010, lvl - 0.0008])
+    df3 = mkdf(rows)
+    smc = analyze(df3, CFG)
+    eq_sweeps = [s for s in smc["sweeps"] if s["kind"] == "equal_highs" and s["index"] >= n2]
+    assert len(eq_sweeps) == 1, f"expected 1 equal_highs sweep, got {eq_sweeps}"
+    assert eq_sweeps[0]["index"] == n2
+    print(f"equal-pool sweep OK: fired once at idx {n2} @ {eq_sweeps[0]['level']:.5f}")
+
+
+def test_multi_swing_book_and_fast_parity():
+    """Older un-broken swing highs stay live after a lower swing high confirms,
+    and FastSMC.at(i) matches analyze(df[:i+1]) on sweeps and rejections."""
+    from app.smc.fast_context import FastSMC
+    df, t = base_rows()
+    rows = list(df.values)
+    n = len(df)
+    # Swing high 1 at n, dip, lower swing high 2 at n+4 (distinct from base_rows swing high 1.13630), 3 confirm bars, then sweep high1
+    high1 = 1.1390
+    high2 = 1.1375
+    rows.append([t + n * 900, 1.1350, high1, 1.1345, 1.1355])
+    rows.append([t + (n + 1) * 900, 1.1355, 1.1358, 1.1340, 1.1342])
+    rows.append([t + (n + 2) * 900, 1.1342, 1.1348, 1.1335, 1.1340])
+    rows.append([t + (n + 3) * 900, 1.1340, 1.1352, 1.1338, 1.1350])
+    rows.append([t + (n + 4) * 900, 1.1350, high2, 1.1346, 1.1348])
+    for j in range(3):
+        rows.append([t + (n + 5 + j) * 900, 1.1348, 1.1350,
+                     1.1340 - j * 0.0001, 1.1344])
+    # Wick sweeps BOTH high2 and the older high1, closing below high2
+    rows.append([t + (n + 8) * 900, 1.1344, high1 + 0.0006, 1.1340, high2 - 0.0004])
+    df2 = mkdf(rows)
+
+    cfg_no_day = dict(CFG, rejection=dict(CFG["rejection"], use_day_extremes=False))
+    smc = analyze(df2, cfg_no_day)
+    bar_sweeps = [s for s in smc["sweeps"] if s["index"] == n + 8 and s["side"] == "buyside"]
+    swept_lvls = [round(s["level"], 5) for s in bar_sweeps]
+    assert high1 in swept_lvls and high2 in swept_lvls, f"missing older swing high: {bar_sweeps}"
+
+    fast = FastSMC(df2, CFG)
+    for idx in (len(df2) - 3, len(df2) - 2, len(df2) - 1):
+        sub = df2.iloc[:idx + 1].reset_index(drop=True)
+        ref = analyze(sub, CFG)
+        got = fast.at(idx)
+        assert got["sweeps"] == ref["sweeps"], f"FastSMC sweeps mismatch at {idx}"
+        assert got["rejections"] == ref["rejections"], f"FastSMC rejections mismatch at {idx}"
+    print("multi-swing book & FastSMC parity OK")
+
+
 if __name__ == "__main__":
     test_detector_fires_on_sweep_engulf()
     test_zone_setups_still_flow()
@@ -252,4 +321,6 @@ if __name__ == "__main__":
     test_directional_filter()
     test_eqh_newest_touch_keeps_swing()
     test_day_extreme_sweep()
+    test_equal_pool_sweep_and_consumption()
+    test_multi_swing_book_and_fast_parity()
     print("ALL SMOKE TESTS PASSED")

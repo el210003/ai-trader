@@ -113,6 +113,8 @@ for i in unvisited:
                       "price": mean of group prices,
                       "touches": len(group),
                       "last_time": max(group times),
+                      "last_index": max(group indices),
+                      "last_confirmed_at": max(group confirmed_at),
                       "members": [group indices]})
 ```
 
@@ -126,46 +128,28 @@ Sellside pools sit **below** (stop losses of longs).
 
 ### 2b. Liquidity sweeps — `detect_sweeps`
 
-A single pass over candles. Maintains pointers to the most recently confirmed
-swing high/low and a `consumed` set for pools:
+A single chronological pass over candles in `ProcessBar` no-hindsight order
+(evaluate against books as of bar `i-1`'s close → fold server-day extremes →
+invalidate body-broken swing levels → add swings confirmed by bar `i`):
 
-```python
-last_high, last_low = None, None
-ptr = 0; consumed = set()
-
-for i in range(n):
-    while ptr < len(swings) and swings[ptr].confirmed_at <= i:
-        if type=="high": last_high = swings[ptr]
-        else: last_low = swings[ptr]
-        ptr += 1
-
-    # structural sweep of the last swing level
-    if last_high and highs[i] > last_high.price and closes[i] < last_high.price:
-        sweeps.append({"side": "buyside", "kind": "swing_high", ...})
-    if last_low  and lows[i]  < last_low.price  and closes[i] > last_low.price:
-        sweeps.append({"side": "sellside", "kind": "swing_low", ...})
-
-    # equal-level pool sweeps
-    for pi, p in enumerate(pools):
-        if pi in consumed or i <= p.last_time: continue
-        if p.side == "buyside":
-            if closes[i] > p.price:                 consumed.add(pi)
-            elif highs[i] > p.price and closes[i] < p.price:
-                sweeps.append({"side": "buyside", "kind": "equal_highs", ...})
-        else:
-            if closes[i] < p.price:                 consumed.add(pi)
-            elif lows[i] < p.price and closes[i] > p.price:
-                sweeps.append({"side": "sellside", "kind": "equal_lows", ...})
-```
+- **Live swing books (`live_highs`, `live_lows`)**: price-sorted active swing
+  highs/lows. A wick-and-retreat sweeps and consumes the level so it does
+  not re-fire repeatedly; a candle body-close through a level breaks it.
+- **Equal-level pools (`equal_highs`, `equal_lows`)**: evaluated once all
+  member swings are confirmed (`i >= pool.last_confirmed_at`) and consumed
+  on either a sweep or a body close through the level.
+- **Server-day extremes (`day_high`, `day_low`)**: when `use_day_extremes` is
+  enabled, running server-day H/L (reset at server midnight) also act as
+  sweep references.
 
 **A sweep = wick beyond the level + close back inside.** That's the stop-hunt
 signature: stops trigger, then price reverses.
 
 | Design choice | Reason |
 |---|---|
-| **Two checks per candle: last swing + all pools** | The last-swing check catches fresh structure sweeps; the pool check catches equal-level sweeps even after a BOS has consumed the most recent swing. |
-| **Consume pool on first close through** | Once price closes beyond a pool, the pool's liquidity has been *used*; future wicks past it aren't sweeps anymore. Prevents a single pool from firing every bar in a trend. |
-| **Single pass, O(n)** | The pointer into sorted swings never moves backward. Whole sweep pass is linear. |
+| **Live swing books + pools + day extremes** | Retains all un-broken swing levels (not just the single latest pivot) while also catching equal-level pool and session/day extreme stop hunts. |
+| **Consume on sweep or close-through** | Once liquidity is swept or closed through, it has been taken; future wicks past it won't re-fire duplicate sweep signals. |
+| **No-hindsight bar ordering** | Pivots and day extremes only become sweepable *after* the bar that confirms/sets them closes, keeping `FastSMC.at(i)` bit-identical to `analyze(df[:i+1])`. |
 
 ---
 

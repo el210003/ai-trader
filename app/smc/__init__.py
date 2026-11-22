@@ -24,10 +24,13 @@ def analyze(df: pd.DataFrame, cfg: dict) -> dict:
     events, trend = detect_structure(df, swings)
 
     close = float(df["close"].iloc[-1])
-    tol = close * float(cfg.get("eq_tolerance_pct", 0.0006))
-    pools = (cluster_equal_levels(swings, "buyside", tol)
-             + cluster_equal_levels(swings, "sellside", tol))
-    sweeps = detect_sweeps(df, swings, pools)
+    tol_pct = float(cfg.get("eq_tolerance_pct", 0.0006))
+    tol = close * tol_pct
+    confirmed_swings = [s for s in swings if s["confirmed_at"] < len(df)]
+    pools = (cluster_equal_levels(confirmed_swings, "buyside", tol)
+             + cluster_equal_levels(confirmed_swings, "sellside", tol))
+    use_day_extremes = bool((cfg.get("rejection") or {}).get("use_day_extremes", True))
+    sweeps = detect_sweeps(df, swings, pools, tol_pct=tol_pct, use_day_extremes=use_day_extremes)
     dealing_range = compute_dealing_range(df, swings)
     n = len(df)
     obs = ob_view(find_order_blocks(df, events, int(cfg.get("ob_max_age_bars", 300))),
