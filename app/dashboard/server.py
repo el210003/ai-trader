@@ -183,10 +183,11 @@ def create_app(cfg: dict) -> FastAPI:
                         state["last_pull"] = {"at": int(t_b)}
                         # phase 1: pull incremental candle delta (full pull only on cold start)
                         watch["phase"] = "pull"
+                        t_pull = time.time()
                         pull_fail = set()
                         with _m5.MT5_LOCK:
-                            for symbol, tf in batch:
-                                watch["detail"] = f"{symbol} {tf}"
+                            for idx_p, (symbol, tf) in enumerate(batch, 1):
+                                watch["detail"] = f"{idx_p}/{len(batch)} {symbol} {tf}"
                                 watch["heartbeat"] = time.time()
                                 try:
                                     have_n = store.candle_count(symbol, tf)
@@ -200,6 +201,8 @@ def create_app(cfg: dict) -> FastAPI:
                                     last_seen[(symbol, tf)] = -1
                                     pair_fail_at[(symbol, tf)] = time.time()
                         to_analyze = [(s, tf) for s, tf in batch if (s, tf) not in pull_fail]
+                        debug(f"bar-close pull done: {len(to_analyze)}/{len(batch)} pairs "
+                              f"in {time.time() - t_pull:.1f}s")
                         # model freshness: one check per batch (workers load the
                         # model file per task, so retrains are picked up)
                         if to_analyze:
@@ -208,21 +211,40 @@ def create_app(cfg: dict) -> FastAPI:
                                                               verbose=debug_enabled(cfg))
                             except Exception as e:
                                 debug(f"ensure_model_current failed: {e}")
-                        # phase 2: analyses in the process pool (true CPU parallelism;
-                        # workers return serialized analyses and parent writes sequentially
-                        # so SQLite never hits cross-process write lock contention)
-                        watch["phase"] = "analyze"
-                        watch["detail"] = f"{len(to_analyze)} pairs"
+                        # phase 2 (Pass 1): fast pure SMC + ML in the process pool
+                        # (skip_llm=True so dashboard, setups, and Telegram alerts land
+                        # in seconds; qualifying setups are enriched by LLM in Pass 2)
+                        from concurrent.futures import ThreadPoolExecutor, as_completed
+                        watch["phase"] = "analyze-smc-ml"
+                        in_flight = {f"{s} {tf}" for s, tf in to_analyze}
+                        watch["detail"] = f"0/{len(to_analyze)} done | active: {len(in_flight)} pairs"
                         watch["heartbeat"] = time.time()
                         results = []
+                        llm_queue = []
                         pool = pipeline._analysis_pool(cfg)
                         if pool is not None and len(to_analyze) > 1:
-                            payloads = [(s, tf, cfg["storage"]["path"], cfg, True, False)
-                                        for s, tf in to_analyze]
-                            results = list(pool.map(pipeline._analyze_pair_worker, payloads))
-                            watch["heartbeat"] = time.time()
+                            fut_map = {
+                                pool.submit(
+                                    pipeline._analyze_pair_worker,
+                                    (s, tf, cfg["storage"]["path"], cfg, True, False, True),
+                                ): (s, tf)
+                                for s, tf in to_analyze
+                            }
                             now_save = int(time.time())
-                            for r in results:
+                            done_n = 0
+                            for fut in as_completed(fut_map):
+                                s, tf = fut_map[fut]
+                                r = fut.result()
+                                results.append(r)
+                                done_n += 1
+                                in_flight.discard(f"{s} {tf}")
+                                rem = sorted(in_flight)
+                                rem_txt = ", ".join(rem[:5]) + (f" +{len(rem) - 5} more" if len(rem) > 5 else "")
+                                watch["detail"] = f"{done_n}/{len(to_analyze)} done" + (f" | remaining: {rem_txt}" if rem else "")
+                                watch["heartbeat"] = time.time()
+                                pend_tag = " [llm queued]" if r.get("llm_pending") else ""
+                                debug(f"  [pass1 {done_n}/{len(to_analyze)}] {s} {tf} SMC+ML done in {r.get('seconds')}s "
+                                      f"(setups={r.get('setups', 0)}{pend_tag})")
                                 if r.get("ok") and r.get("analysis") is not None:
                                     a = r["analysis"]
                                     store.save_analysis(r["symbol"], r["tf"], a)
@@ -230,16 +252,26 @@ def create_app(cfg: dict) -> FastAPI:
                                         store.append_setups(r["symbol"], r["tf"], a.get("setups", []), now_save)
                                     except Exception:
                                         pass
+                                    if r.get("llm_pending"):
+                                        llm_queue.append((s, tf))
                         else:
-                            for s, tf in to_analyze:
-                                watch["detail"] = f"{s} {tf}"
+                            for idx_s, (s, tf) in enumerate(to_analyze, 1):
+                                watch["detail"] = f"{idx_s}/{len(to_analyze)} {s} {tf}"
                                 watch["heartbeat"] = time.time()
+                                t_s = time.time()
                                 try:
                                     if symbol_stats:
                                         symbol_stats.invalidate(s)
-                                    pipeline.analyze_symbol(store, s, tf, cfg, ml, llm,
-                                                            symbol_stats, drop_last_bar=True)
-                                    results.append({"symbol": s, "tf": tf, "ok": True})
+                                    a = pipeline.analyze_symbol(store, s, tf, cfg, ml, llm,
+                                                                symbol_stats, drop_last_bar=True,
+                                                                skip_llm=True)
+                                    pend = bool((a.get("meta") or {}).get("llm_pending")) if a else False
+                                    if pend:
+                                        llm_queue.append((s, tf))
+                                    results.append({"symbol": s, "tf": tf, "ok": True, "llm_pending": pend})
+                                    debug(f"  [pass1 {idx_s}/{len(to_analyze)}] {s} {tf} SMC+ML done in "
+                                          f"{time.time() - t_s:.1f}s (setups={len(a['setups']) if a else 0}"
+                                          f"{' [llm queued]' if pend else ''})")
                                 except Exception as e:
                                     results.append({"symbol": s, "tf": tf, "ok": False, "error": str(e)})
                         for r in results:
@@ -274,7 +306,7 @@ def create_app(cfg: dict) -> FastAPI:
                             pipeline.resolve_pending(store, cfg)
                         except Exception as e:
                             state["last_error"] = f"outcome resolve: {e}"
-                        # notify Telegram on confirmed structure breaks (CHoCH / BOS)
+                        # notify Telegram immediately on confirmed structure breaks (CHoCH / BOS)
                         watch["phase"] = "telegram"
                         watch["heartbeat"] = time.time()
                         try:
@@ -283,6 +315,49 @@ def create_app(cfg: dict) -> FastAPI:
                                 notify_structure_events(store, cfg, ok_pairs)
                         except Exception as e:
                             debug(f"[telegram] bar-close notify error: {e}")
+
+                        # phase 2 (Pass 2): enrich only the queued setups with LLM narratives
+                        if llm_queue and llm.usable:
+                            watch["phase"] = "analyze-llm"
+                            t_llm = time.time()
+                            llm_inflight = {f"{s} {tf}" for s, tf in llm_queue}
+                            watch["detail"] = f"0/{len(llm_queue)} done | active: {len(llm_inflight)} pairs"
+                            watch["heartbeat"] = time.time()
+                            debug(f"bar-close pass 2 (LLM): enriching {len(llm_queue)} pair(s): "
+                                  + ", ".join(f"{s} {tf}" for s, tf in llm_queue))
+
+                            def _run_llm_pair(pair_item):
+                                sym_i, tf_i = pair_item
+                                t_i = time.time()
+                                res_i = pipeline.enrich_analysis_llm(
+                                    store, sym_i, tf_i, cfg, llm, drop_last_bar=True
+                                )
+                                res_i["seconds"] = round(time.time() - t_i, 1)
+                                return res_i
+
+                            with ThreadPoolExecutor(max_workers=min(4, len(llm_queue))) as ex:
+                                llm_futs = {ex.submit(_run_llm_pair, p): p for p in llm_queue}
+                                done_l = 0
+                                for fut in as_completed(llm_futs):
+                                    sym_i, tf_i = llm_futs[fut]
+                                    done_l += 1
+                                    llm_inflight.discard(f"{sym_i} {tf_i}")
+                                    rem_l = sorted(llm_inflight)
+                                    watch["detail"] = (
+                                        f"{done_l}/{len(llm_queue)} done"
+                                        + (f" | remaining: {', '.join(rem_l[:5])}" if rem_l else "")
+                                    )
+                                    watch["heartbeat"] = time.time()
+                                    try:
+                                        lr = fut.result()
+                                        debug(f"  [pass2 {done_l}/{len(llm_queue)}] {sym_i} {tf_i} LLM done in "
+                                              f"{lr.get('seconds')}s (calls={lr.get('llm_calls', 0)} "
+                                              f"cached={lr.get('llm_cached', 0)})")
+                                    except Exception as e:
+                                        debug(f"  [pass2 {done_l}/{len(llm_queue)}] {sym_i} {tf_i} LLM failed: {e}")
+                            state["last_analysis"] = {"at": int(time.time())}
+                            debug(f"bar-close pass 2 (LLM) done: {len(llm_queue)} pair(s) in "
+                                  f"{time.time() - t_llm:.1f}s")
                 except Exception as e:
                     state["last_error"] = f"bar watcher: {e}"
                     debug(f"bar watcher poll error: {e}")

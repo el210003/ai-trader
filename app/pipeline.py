@@ -53,7 +53,7 @@ def build_llm_context(setup: dict, smc: dict, htf_ctx: dict = None) -> dict:
 def analyze_symbol(store: Store, symbol: str, tf: str, cfg: dict,
                    ml: SetupML, llm: LLMAnalyzer,
                    symbol_stats: SymbolStats = None, drop_last_bar: bool = False,
-                   save: bool = True):
+                   save: bool = True, skip_llm: bool = False):
     """Full analysis for one symbol/timeframe. Returns analysis dict or None.
 
     drop_last_bar=True analyzes only CLOSED bars (the newest candle MT5 returns
@@ -147,6 +147,7 @@ def analyze_symbol(store: Store, symbol: str, tf: str, cfg: dict,
     gate = float(llm_cfg.get("min_ml_prob", 0.0) or 0.0)
     for s in chosen:
         s["llm"] = None
+    llm_pending = False
     if llm.usable and chosen:
         to_call = []
         for s in chosen:
@@ -154,14 +155,17 @@ def analyze_symbol(store: Store, symbol: str, tf: str, cfg: dict,
             if mp is None or mp >= gate:      # gate: skip when ML says hopeless
                 to_call.append(s)
         if to_call:
-            contexts = [build_llm_context(s, smc, htf_ctx) for s in to_call]
-            if len(to_call) == 1:
-                to_call[0]["llm"] = llm.analyze_setup(contexts[0])
+            if skip_llm:
+                llm_pending = True
             else:
-                with ThreadPoolExecutor(max_workers=min(4, len(to_call))) as ex:
-                    results = list(ex.map(llm.analyze_setup, contexts))
-                for s, res in zip(to_call, results):
-                    s["llm"] = res
+                contexts = [build_llm_context(s, smc, htf_ctx) for s in to_call]
+                if len(to_call) == 1:
+                    to_call[0]["llm"] = llm.analyze_setup(contexts[0])
+                else:
+                    with ThreadPoolExecutor(max_workers=min(4, len(to_call))) as ex:
+                        results = list(ex.map(llm.analyze_setup, contexts))
+                    for s, res in zip(to_call, results):
+                        s["llm"] = res
     for s in chosen:
         s.update(fuse(s, cfg["ai"]))
 
@@ -172,7 +176,8 @@ def analyze_symbol(store: Store, symbol: str, tf: str, cfg: dict,
         "tf": tf,
         "generated_at": int(time.time()),
         "meta": {"bars": int(smc["n_bars"]), "model_loaded": ml.loaded,
-                 "llm_used": llm.usable},
+                 "llm_used": llm.usable and not skip_llm,
+                 "llm_pending": llm_pending},
         "smc": {
             "trend": smc["trend"],
             "events": smc["events"][-40:],
@@ -291,33 +296,113 @@ def _analyze_pair_worker(payload):
     When save=False (default for parallel batches), returns the serialized
     analysis dict so the parent process persists sequentially with zero
     cross-process SQLite write contention."""
-    if len(payload) == 6:
+    if len(payload) == 7:
+        symbol, tf, storage_path, cfg, drop_last_bar, save, skip_llm = payload
+    elif len(payload) == 6:
         symbol, tf, storage_path, cfg, drop_last_bar, save = payload
+        skip_llm = False
     else:
         symbol, tf, storage_path, cfg, drop_last_bar = payload
         save = True
+        skip_llm = False
     out = {"symbol": symbol, "tf": tf, "ok": False, "setups": 0,
-           "verdicts": [], "analysis": None, "error": None, "seconds": 0.0}
+           "verdicts": [], "analysis": None, "error": None, "seconds": 0.0,
+           "llm_pending": False, "timings": {}}
     t0 = time.time()
     try:
         store = Store(storage_path)
         try:
+            t_ml = time.time()
             ml = SetupML(cfg["ai"]["ml"]["model_path"])
             ml.load()
+            out["timings"]["ml_load"] = round(time.time() - t_ml, 2)
             llm = LLMAnalyzer(cfg.get("ai", {}).get("llm", {}), store=store)
+            t_an = time.time()
             a = analyze_symbol(store, symbol, tf, cfg, ml, llm, SymbolStats(),
-                               drop_last_bar=drop_last_bar, save=save)
+                               drop_last_bar=drop_last_bar, save=save,
+                               skip_llm=skip_llm)
+            out["timings"]["analyze"] = round(time.time() - t_an, 2)
             out["ok"] = True
             out["analysis"] = a if not save else None
+            out["llm_pending"] = bool((a.get("meta") or {}).get("llm_pending")) if a else False
             out["setups"] = len(a["setups"]) if a else 0
             out["verdicts"] = [(s["direction"], s["verdict"], s.get("final_score"))
                                 for s in (a["setups"] if a else [])]
+            out["llm_calls"] = sum(1 for s in (a["setups"] if a else [])
+                                   if s.get("llm") and not s["llm"].get("_cached"))
+            out["llm_cached"] = sum(1 for s in (a["setups"] if a else [])
+                                    if s.get("llm") and s["llm"].get("_cached"))
         finally:
             store.conn.close()
     except Exception as e:
         out["error"] = str(e)
     out["seconds"] = round(time.time() - t0, 1)
     return out
+
+
+def enrich_analysis_llm(store: Store, symbol: str, tf: str, cfg: dict,
+                        llm: LLMAnalyzer, drop_last_bar: bool = True) -> dict:
+    """Pass 2: enrich an already-saved SMC+ML analysis with LLM verdicts and
+    re-fuse scores. Only calls the LLM for setups clearing `min_ml_prob`."""
+    analysis = store.load_analysis(symbol, tf)
+    if not analysis or not llm.usable:
+        return {"symbol": symbol, "tf": tf, "ok": True, "llm_calls": 0, "llm_cached": 0}
+    chosen = analysis.get("setups") or []
+    llm_cfg = cfg.get("ai", {}).get("llm", {})
+    gate = float(llm_cfg.get("min_ml_prob", 0.0) or 0.0)
+    to_call = [
+        s for s in chosen
+        if (s.get("ml_prob") is None or s.get("ml_prob") >= gate)
+    ]
+    if not to_call:
+        if (analysis.get("meta") or {}).get("llm_pending"):
+            analysis["meta"]["llm_pending"] = False
+            store.save_analysis(symbol, tf, jsonable(analysis))
+        return {"symbol": symbol, "tf": tf, "ok": True, "llm_calls": 0, "llm_cached": 0}
+
+    df = store.load_candles(symbol, tf)
+    if df is not None and len(df) >= 250:
+        df = df.reset_index(drop=True)
+        if drop_last_bar:
+            df = df.iloc[:-1]
+        smc = smc_mod.analyze(df, cfg["smc"])
+        mtf_cfg = cfg.get("mtf", {})
+        htf_ctx = (
+            build_htf_context(symbol, tf, cfg,
+                              up_to_time=int(df["time"].iat[-1]),
+                              load_df=store.load_candles)
+            if mtf_cfg.get("enabled", True) else {}
+        )
+    else:
+        smc = analysis.get("smc") or {}
+        htf_ctx = {}
+
+    contexts = [build_llm_context(s, smc, htf_ctx) for s in to_call]
+    if len(to_call) == 1:
+        to_call[0]["llm"] = llm.analyze_setup(contexts[0])
+    else:
+        with ThreadPoolExecutor(max_workers=min(4, len(to_call))) as ex:
+            res_list = list(ex.map(llm.analyze_setup, contexts))
+        for s, res in zip(to_call, res_list):
+            s["llm"] = res
+
+    for s in chosen:
+        s.update(fuse(s, cfg["ai"]))
+    chosen.sort(key=lambda s: (-s.get("final_score", 0), s["direction"]))
+    analysis["setups"] = chosen
+    meta = analysis.setdefault("meta", {})
+    meta["llm_used"] = True
+    meta["llm_pending"] = False
+    analysis["generated_at"] = int(time.time())
+    payload = jsonable(analysis)
+    store.save_analysis(symbol, tf, payload)
+    try:
+        store.append_setups(symbol, tf, chosen, int(time.time()))
+    except Exception:
+        pass
+    llm_calls = sum(1 for s in to_call if s.get("llm") and not s["llm"].get("_cached"))
+    llm_cached = sum(1 for s in to_call if s.get("llm") and s["llm"].get("_cached"))
+    return {"symbol": symbol, "tf": tf, "ok": True, "llm_calls": llm_calls, "llm_cached": llm_cached}
 
 
 def refresh_pair(cfg: dict, store: Store, symbol: str, tf: str, mt5,
