@@ -287,6 +287,7 @@ def build_setups(symbol: str, tf: str, df, smc: dict, cfg: dict,
     retest_buffer = float(cfg.get("retest_buffer_atr", 0.20)) * atr_v
     entry_valid = int(cfg.get("entry_valid_bars", 24))
     skip_already_tested = bool(cfg.get("skip_already_tested", True))
+    require_zone_sweep = bool(cfg.get("require_zone_sweep", False))
     lows = df["low"].values
     highs = df["high"].values
     setups: List[dict] = []
@@ -303,7 +304,10 @@ def build_setups(symbol: str, tf: str, df, smc: dict, cfg: dict,
         recent = [s for s in smc["sweeps"]
                   if s["side"] == want_side and (n - 1) - s["index"] <= sweep_lb]
 
-        if not aligned and not recent:
+        if require_zone_sweep:
+            if not recent:
+                continue
+        elif not aligned and not recent:
             continue
         if aligned:
             conf.append("market structure aligned")

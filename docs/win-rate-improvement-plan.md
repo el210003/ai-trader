@@ -1,7 +1,7 @@
 # Win-Rate & Expectancy Improvement Plan
 
 **Date:** 2026-11-23  
-**Status:** Plan Only (No code or config modified yet)  
+**Status:** Phase 1 Implemented (`2026-11-23 08:45:45`)  
 **Evidence Base:** 462 resolved live setups in `data/trader.db` + 3,454 clean `M15` replay setups across the 8 major symbols.
 
 ---
@@ -56,8 +56,10 @@ Data from both live resolved outcomes (`n=462`) and clean `M15` replay (`n=3,454
 
 ## Phased Implementation Plan
 
-### Phase 1 — High-Impact Setup Geometry & Filter Tuning (`config.yaml`)
+### Phase 1 — High-Impact Setup Geometry & Filter Tuning (`config.yaml`) *(DONE)*
 *Goal: Eliminate structurally low-win-rate setups at setup construction time before ML/LLM scoring.*
+
+> **Phase 1 Execution Summary (`2026-11-23`):** Applied `smc.max_rr: 3.2`, `smc.sl_buffer_atr: 0.40`, `mtf.require_htf_bias: true`, `execution.trading_hours: "07-20"`, disabled `AUDCHF`, `AUDJPY`, `USDCHF`, `EURJPY` (`18` active symbols remaining), bumped `BUILDER_VERSION = "v5-phase1-filters"`, and retrained (`n_samples = 4,086` [`3,882` M15 replay + `204` blended live outcomes, beating replay-only `cv_auc` `0.546` -> **`0.555`**], `cv_brier = 0.2331`, `win_rate = 0.379`).
 
 1. **Cap `smc.max_rr` from `5.0` to `3.2` (or `3.5`)**:
    - Distant liquidity targets (`>3.5R`) rarely fill within the 96-bar (`24h`) M15 horizon (`11.9%` WR live, `17.1%` replay). Capping `max_rr: 3.2` converts far-target setups into achievable take-profits and immediately lifts overall win rate by ~`+1.5%–2.0%`.

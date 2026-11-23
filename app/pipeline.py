@@ -131,7 +131,9 @@ def analyze_symbol(store: Store, symbol: str, tf: str, cfg: dict,
     best = {}
     for s in setups:
         key = s["direction"]
-        rank = ((s["ml_prob"] if s["ml_prob"] is not None else 0.5),
+        is_rej = 1 if s.get("setup_kind") == "rejection" else 0
+        rank = (round(s["ml_prob"], 3) if s["ml_prob"] is not None else 0.5,
+                is_rej,
                 len(s["confluences"]))
         if key not in best or rank > best[key][0]:
             best[key] = (rank, s)

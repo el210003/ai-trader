@@ -34,8 +34,9 @@ DEFAULTS = {
         "min_risk_atr": 0.75,
         "max_entry_distance_atr": 1.0,
         "skip_already_tested": True,
+        "require_zone_sweep": True,
         "retest_buffer_atr": 0.20,
-        "entry_valid_bars": 24,
+        "entry_valid_bars": 12,
         "atr_period": 14,
     },
     "ai": {
