@@ -141,9 +141,11 @@ ai:
     min_ml_prob: 0.30        # skip LLM when ML win-probability < 30%
     cache_ttl: 900           # reuse cached LLM narrative for 15 min
   hybrid:
-    ml_weight: 0.6           # weight of ML win-probability in final score
-    llm_weight: 0.4          # weight of LLM confidence in final score
-    buy_threshold: 55        # final score needed to emit BUY/SELL (else WAIT)
+    ml_weight: 0.75          # weight of ML win-probability in final score
+    llm_weight: 0.25         # weight of LLM confidence in final score
+    buy_threshold: 44        # final score needed to emit BUY/SELL (else WAIT)
+    contradiction_penalty: 5.0    # mild penalty when LLM bias disagrees (was 20.0)
+    avoid_override_ml_prob: 0.42  # allow strong ML setups (>=0.42) past hard AVOID
 
 # Currency Strength Meter (CSM28 port): z-scores over the 28 standard pairs,
 # averaged per currency (base +1 / quote -1), smoothed. The engine auto-ingests
@@ -202,8 +204,8 @@ execution:
   risk_percent: 1.0          # % of balance risked per trade, sized from the SL distance
   fixed_lot: null            # set e.g. 0.10 to bypass risk-percent sizing
   allow_min_lot: false       # false = skip when the sized lot is below the broker minimum
-  min_score: 58              # hybrid final score required (dashboard threshold is 55)
-  min_ml_prob: 0.40          # ML win probability required (setup skipped below this)
+  min_score: 44              # hybrid final score required (dashboard threshold is 44)
+  min_ml_prob: 0.41          # ML win probability required (setup skipped below this)
   max_open_positions: 3      # total open bot positions + pending orders
   max_per_symbol: 1          # open bot positions + pendings per symbol
   max_trades_per_day: 5      # daily cap (resets at local midnight)

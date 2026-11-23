@@ -8,9 +8,11 @@ def fuse(setup: dict, ai_cfg: dict) -> dict:
     want_bias = "bullish" if direction == "long" else "bearish"
 
     hyb = (ai_cfg or {}).get("hybrid", {})
-    ml_w = float(hyb.get("ml_weight", 0.6))
-    llm_w = float(hyb.get("llm_weight", 0.4))
-    threshold = float(hyb.get("buy_threshold", 60))
+    ml_w = float(hyb.get("ml_weight", 0.75))
+    llm_w = float(hyb.get("llm_weight", 0.25))
+    threshold = float(hyb.get("buy_threshold", 55))
+    contra_penalty = float(hyb.get("contradiction_penalty", 5.0))
+    avoid_override_ml = float(hyb.get("avoid_override_ml_prob", 0.42))
 
     scores, weights = [], []
     if ml is not None:
@@ -32,10 +34,11 @@ def fuse(setup: dict, ai_cfg: dict) -> dict:
     aligned = True
     if llm and llm.get("bias") in ("bullish", "bearish") and llm["bias"] != want_bias:
         aligned = False
-        final -= 20.0
+        final -= contra_penalty
     final = max(0.0, min(100.0, final))
 
-    if not aligned:
+    ml_strong = ml is not None and float(ml) >= avoid_override_ml
+    if not aligned and not ml_strong:
         verdict = "AVOID"
     elif final >= threshold:
         verdict = "BUY" if direction == "long" else "SELL"

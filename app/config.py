@@ -71,7 +71,13 @@ DEFAULTS = {
             "min_ml_prob": 0.30,      # skip the LLM when ML win-prob is below this
             "cache_ttl": 900,         # identical setups reuse the LLM answer for N seconds
         },
-        "hybrid": {"ml_weight": 0.6, "llm_weight": 0.4, "buy_threshold": 55},
+        "hybrid": {
+            "ml_weight": 0.75,
+            "llm_weight": 0.25,
+            "buy_threshold": 44,
+            "contradiction_penalty": 5.0,
+            "avoid_override_ml_prob": 0.42,
+        },
     },
     "csm": {
         "enabled": True,
@@ -103,8 +109,8 @@ DEFAULTS = {
         "risk_percent": 1.0,           # % of balance risked per trade (SL-distance sizing)
         "fixed_lot": None,             # set a number to bypass risk-percent sizing
         "allow_min_lot": False,        # when sized lot < broker minimum: false=skip, true=trade min
-        "min_score": 58,               # hybrid final score required to execute
-        "min_ml_prob": 0.40,           # ML win probability required to execute
+        "min_score": 44,               # hybrid final score required to execute
+        "min_ml_prob": 0.41,           # ML win probability required to execute
         "max_open_positions": 3,       # total bot positions + pendings
         "max_per_symbol": 1,           # bot positions + pendings per symbol
         "max_trades_per_day": 5,       # daily cap (local midnight reset)

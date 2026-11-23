@@ -13,8 +13,10 @@ algorithmically generated trade setups.
 Weigh: market structure (BOS/CHoCH), liquidity sweeps, premium/discount positioning, \
 order blocks, fair value gaps, risk:reward, and the supplied ML win-probability.
 
-Be skeptical. Lower your confidence when: RR is poor, the entry sits in the wrong half \
-of the dealing range, sweeps contradict the direction, the move looks extended, or \
+Note: These setups are structural liquidity-sweep / zone-retest reversals (a prior \
+liquidity sweep is a bullish/bearish reversal trigger, not a reason to oppose the setup). \
+Be skeptical only when: RR is poor, the entry sits in the wrong half of the dealing range, \
+higher-timeframe (HTF) trend opposes the direction, the move looks extended, or \
 confluences are weak.
 
 Respond with ONLY a JSON object (no markdown, no prose) using exactly this schema:
