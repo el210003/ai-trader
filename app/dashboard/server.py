@@ -252,6 +252,10 @@ def create_app(cfg: dict) -> FastAPI:
                                         store.append_setups(r["symbol"], r["tf"], a.get("setups", []), now_save)
                                     except Exception:
                                         pass
+                                    try:
+                                        notify_structure_events(store, cfg, [(r["symbol"], r["tf"])])
+                                    except Exception as e:
+                                        debug(f"[telegram] bar-close notify error ({r['symbol']} {r['tf']}): {e}")
                                     if r.get("llm_pending"):
                                         llm_queue.append((s, tf))
                         else:
@@ -272,6 +276,10 @@ def create_app(cfg: dict) -> FastAPI:
                                     debug(f"  [pass1 {idx_s}/{len(to_analyze)}] {s} {tf} SMC+ML done in "
                                           f"{time.time() - t_s:.1f}s (setups={len(a['setups']) if a else 0}"
                                           f"{' [llm queued]' if pend else ''})")
+                                    try:
+                                        notify_structure_events(store, cfg, [(s, tf)])
+                                    except Exception as e:
+                                        debug(f"[telegram] bar-close notify error ({s} {tf}): {e}")
                                 except Exception as e:
                                     results.append({"symbol": s, "tf": tf, "ok": False, "error": str(e)})
                         for r in results:
@@ -306,16 +314,6 @@ def create_app(cfg: dict) -> FastAPI:
                             pipeline.resolve_pending(store, cfg)
                         except Exception as e:
                             state["last_error"] = f"outcome resolve: {e}"
-                        # notify Telegram immediately on confirmed structure breaks (CHoCH / BOS)
-                        watch["phase"] = "telegram"
-                        watch["heartbeat"] = time.time()
-                        try:
-                            ok_pairs = [(r["symbol"], r["tf"]) for r in results if r.get("ok")]
-                            if ok_pairs:
-                                notify_structure_events(store, cfg, ok_pairs)
-                        except Exception as e:
-                            debug(f"[telegram] bar-close notify error: {e}")
-
                         # phase 2 (Pass 2): enrich only the queued setups with LLM narratives
                         if llm_queue and llm.usable:
                             watch["phase"] = "analyze-llm"
