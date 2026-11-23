@@ -8,6 +8,7 @@
   python -m app.main list-symbols                      print the symbols the app will use
   python -m app.main select-symbols [--enable ...] [--disable ...] [--all] [--none]
                                                       manage per-symbol enable/disable list
+  python -m app.main test-telegram                     send a test message to verify Telegram config
 """
 import argparse
 import os
@@ -173,6 +174,14 @@ def cmd_run(cfg, args):
             try:
                 syms = _symbols_for(cfg, args, mt5)
                 pipeline.run_all(cfg, demo=demo, ingest=True, verbose=True, symbols=syms)
+                from .notifications.telegram import notify_structure_events
+                store = Store(cfg["storage"]["path"])
+                try:
+                    notify_structure_events(
+                        store, cfg, [(s, tf) for s in syms for tf in cfg["timeframes"]]
+                    )
+                finally:
+                    store.close()
             finally:
                 if mt5 is not None:
                     mt5_client.shutdown_mt5(mt5)
@@ -350,6 +359,45 @@ def cmd_test_llm(cfg, args):
             print("       is LM Studio running with the server started?")
 
 
+def cmd_test_telegram(cfg, args):
+    """Verify all configured Telegram bot targets by sending a test message."""
+    from .notifications.telegram import resolve_targets, send_message
+    tg = cfg.get("telegram") or {}
+    token_env = str(tg.get("bot_token_env") or "TELEGRAM_BOT_TOKEN")
+    chat_env = str(tg.get("chat_id_env") or "TELEGRAM_CHAT_ID")
+    targets = resolve_targets(cfg)
+
+    print(f"telegram config: enabled={bool(tg.get('enabled', False))} | "
+          f"targets={len(targets)}")
+
+    if not targets:
+        print(f"[missing] configure telegram.bot_token + telegram.chat_id in config.yaml "
+              f"(or env vars {token_env} / {chat_env}), or add entries under telegram.bots")
+        return
+
+    any_failed = False
+    for t in targets:
+        token = t["bot_token"]
+        chat_id = t["chat_id"]
+        name = t["name"]
+        masked = (token[:6] + "..." + token[-4:]) if len(token) > 12 else "<set>"
+        timeout = int(t.get("timeout", 10) or 10)
+        label = f" [{name}]" if name != "default" else ""
+        ok, err = send_message(
+            token,
+            chat_id,
+            f"✅ AI Trader Telegram alerts connected{label}",
+            timeout=timeout,
+        )
+        if ok:
+            print(f"[OK] {name}: delivered to chat_id={chat_id} (token={masked})")
+        else:
+            any_failed = True
+            print(f"[FAIL] {name}: {err} (chat_id={chat_id}, token={masked})")
+    if any_failed:
+        sys.exit(1)
+
+
 def cmd_history(cfg, args):
     """Print the journaled setups (forward-validation data)."""
     store = Store(cfg["storage"]['path'])
@@ -441,7 +489,7 @@ def main():
     p.add_argument("command", choices=["ingest", "analyze", "train", "serve",
                                        "run", "list-symbols", "select-symbols",
                                        "history", "outcomes", "insights",
-                                       "migrate-journal", "test-llm", "trade"])
+                                       "migrate-journal", "test-llm", "test-telegram", "trade"])
     p.add_argument("--demo", action="store_true", help="use synthetic data instead of MT5")
     p.add_argument("--all-symbols", action="store_true",
                    help="override config.yaml symbols with symbols discovered from MT5")
@@ -490,6 +538,7 @@ def main():
         "insights": cmd_insights,
         "migrate-journal": _cmd_migrate_journal,
         "test-llm": cmd_test_llm,
+        "test-telegram": cmd_test_telegram,
         "trade": cmd_trade,
     }
     handlers[args.command](cfg, args)

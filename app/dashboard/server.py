@@ -18,6 +18,12 @@ from ..logsetup import debug, debug_enabled
 from ..ai.symbol_stats import SymbolStats
 from ..symbol_selection import SymbolSelection
 from ..execution.executor import ExecutionEngine
+from ..notifications.telegram import (
+    is_configured as telegram_configured,
+    notify_structure_events,
+    resolve_targets as resolve_telegram_targets,
+    send_message as send_telegram_message,
+)
 from .. import pipeline
 
 STATIC_DIR = Path(__file__).parent / "static"
@@ -220,6 +226,13 @@ def create_app(cfg: dict) -> FastAPI:
                             pipeline.resolve_pending(store, cfg)
                         except Exception as e:
                             state["last_error"] = f"outcome resolve: {e}"
+                        # notify Telegram on confirmed structure breaks (CHoCH / BOS)
+                        try:
+                            ok_pairs = [(r["symbol"], r["tf"]) for r in results if r.get("ok")]
+                            if ok_pairs:
+                                notify_structure_events(store, cfg, ok_pairs)
+                        except Exception as e:
+                            debug(f"[telegram] bar-close notify error: {e}")
                 except Exception as e:
                     state["last_error"] = f"bar watcher: {e}"
                     debug(f"bar watcher poll error: {e}")
@@ -276,7 +289,12 @@ def create_app(cfg: dict) -> FastAPI:
             state["last_pull"] = {"at": int(time.time())}   # ingest (bar pull) starts now
             n = pipeline.run_all(cfg, store=store, demo=demo, ingest=True,
                                  verbose=verbose, symbols=visible_symbols())
-            state["last_analysis"] = {"at": int(time.time())}
+            try:
+                all_pairs = [(s, tf) for s in visible_symbols() for tf in cfg["timeframes"]]
+                notify_structure_events(store, cfg, all_pairs)
+            except Exception as e:
+                debug(f"[telegram] refresh notify error: {e}")
+            state["last_analysis"] = {"at": int(time.time())}"
             state["last_run"] = {"at": int(time.time()), "analyses": n,
                                  "seconds": round(time.time() - t0, 1)}
             state["last_error"] = None
@@ -339,6 +357,11 @@ def create_app(cfg: dict) -> FastAPI:
                 "enabled": execution_engine.enabled,
                 "dry_run": execution_engine.dry_run,
                 "magic": execution_engine.magic,
+            },
+            "telegram": {
+                "enabled": bool((cfg.get("telegram") or {}).get("enabled", False)),
+                "configured": telegram_configured(cfg),
+                "targets": len(resolve_telegram_targets(cfg)),
             },
             "analyses": store.list_analyses(),
         }
@@ -684,6 +707,47 @@ def create_app(cfg: dict) -> FastAPI:
         debug(f"[execution] FLATTEN: closed {len(res['closed'])}, "
               f"canceled {len(res['canceled'])}, errors {len(res['errors'])}")
         return {"ok": True, **res}
+
+    # ----------------------------------------------------------- telegram
+    class TelegramToggleBody(BaseModel):
+        enabled: bool
+
+    @app.post("/api/telegram/toggle")
+    def telegram_toggle(body: TelegramToggleBody):
+        """Runtime enable/disable of Telegram structure alerts."""
+        tg = cfg.setdefault("telegram", {})
+        tg["enabled"] = bool(body.enabled)
+        debug(f"[telegram] toggled {'ON' if tg['enabled'] else 'OFF'}")
+        return {
+            "ok": True,
+            "enabled": tg["enabled"],
+            "configured": telegram_configured(cfg),
+        }
+
+    @app.post("/api/telegram/test")
+    def telegram_test():
+        """Send a test message to every configured Telegram bot target."""
+        targets = resolve_telegram_targets(cfg)
+        if not targets:
+            return JSONResponse(
+                {"ok": False, "error": "No Telegram bot_token and chat_id configured"},
+                status_code=400,
+            )
+        results = []
+        for t in targets:
+            label = f" [{t['name']}]" if t["name"] != "default" else ""
+            ok, err = send_telegram_message(
+                t["bot_token"],
+                t["chat_id"],
+                f"✅ <b>AI Trader</b> Telegram structure alerts connected{label}.",
+                timeout=int(t.get("timeout", 10) or 10),
+            )
+            results.append({"name": t["name"], "ok": ok, "error": None if ok else err})
+        failed = [r for r in results if not r["ok"]]
+        if failed:
+            err_msg = "; ".join(f"{r['name']}: {r['error']}" for r in failed)
+            return JSONResponse({"ok": False, "error": err_msg, "results": results}, status_code=502)
+        return {"ok": True, "results": results}
 
     class NoCacheStatic(StaticFiles):
         """Serve static assets with no-cache so UI updates land on normal refresh."""

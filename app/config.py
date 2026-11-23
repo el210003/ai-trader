@@ -122,6 +122,20 @@ DEFAULTS = {
         "poll_seconds": 15,            # how often the engine scans for fresh setups
         "comment": "ai-trader",        # order comment tag in MT5
     },
+    "telegram": {
+        "enabled": False,
+        "bot_token": "",
+        "chat_id": "",
+        "bot_token_env": "TELEGRAM_BOT_TOKEN",
+        "chat_id_env": "TELEGRAM_CHAT_ID",
+        "events": ["choch", "bos"],
+        "timeframes": [],
+        "symbols": [],
+        "max_event_age_bars": 2,
+        "quiet_hours": None,
+        "timeout": 10,
+        "bots": [],
+    },
     "dashboard": {"host": "127.0.0.1", "port": 8000, "refresh_seconds": 60,
                   "auto_run_interval": 0, "bar_close_watcher": False,
                   "bar_poll_seconds": 10, "debug": True,

@@ -231,6 +231,7 @@ score), **Journal** (forward-validation log + ML-bucket calibration), **Perf**
 | `migrate-journal` | Collapse duplicate journal rows into one per real setup (backs up first) |
 | `list-symbols [--all-symbols]` | Print the symbol list the app will use |
 | `select-symbols [--enable X ...] [--disable X ...] [--all] [--none]` | Manage the persistent enable/disable list |
+| `test-telegram` | Send a test message to every configured Telegram bot target |
 
 ## Symbol sources
 
@@ -322,6 +323,20 @@ check_env.bat    :: verify deps + model/env consistency (venv)
 If the dashboard ML badge shows an env mismatch (model trained on a different
 numpy than the running server), run `check_env.bat`, then `train.bat` from
 the environment you serve with.
+
+## Telegram structure alerts (`CHoCH` & `BOS`)
+
+Push notifications for confirmed **CHoCH** (reversals) and **BOS** (continuations) via the Telegram Bot API (`app/notifications/telegram.py`). Supports either a single bot (`telegram.bot_token` / `telegram.chat_id` or `$TELEGRAM_BOT_TOKEN` / `$TELEGRAM_CHAT_ID`) or multiple independent bots/channels under `telegram.bots:` with per-bot `events`, `timeframes`, and `symbols` filters. Existing events are silently seeded on first run so startup never floods old breaks.
+
+```bat
+setx TELEGRAM_BOT_TOKEN "123456789:AAH..."
+setx TELEGRAM_CHAT_ID "-1001234567890"
+:: set telegram.enabled: true in config.yaml, then verify:
+python -m app.main test-telegram
+serve.bat --on-bar-close
+```
+
+Full single-bot and multi-bot setup guide: [`docs/telegram-structure-alerts-proposal.md`](docs/telegram-structure-alerts-proposal.md).
 
 ## Notes & disclaimer
 

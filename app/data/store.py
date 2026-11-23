@@ -112,6 +112,16 @@ class Store:
                 placed_at       INTEGER,
                 payload         TEXT
             );
+            CREATE TABLE IF NOT EXISTS telegram_alerts(
+                event_key  TEXT PRIMARY KEY,
+                symbol     TEXT NOT NULL,
+                tf         TEXT NOT NULL,
+                event_type TEXT NOT NULL,
+                direction  TEXT,
+                event_time INTEGER NOT NULL,
+                sent_at    INTEGER NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_tg_alerts_pair ON telegram_alerts(symbol, tf);
             """
         )
         # execution log indexes
@@ -494,6 +504,43 @@ class Store:
                         "direction": direction, "features": feats,
                         "label": 1 if result == "WIN" else 0})
         return out
+
+    # ----------------------------------------------------- telegram alerts
+    @_locked
+    def has_telegram_seed(self, symbol: str, tf: str, target_prefix: str = "") -> bool:
+        if target_prefix:
+            cur = self.conn.execute(
+                "SELECT 1 FROM telegram_alerts WHERE symbol=? AND tf=? AND event_key LIKE ? LIMIT 1",
+                (symbol, tf, f"{target_prefix}|%"),
+            )
+        else:
+            # Primary target uses unprefixed event_keys (not containing 'tg:')
+            cur = self.conn.execute(
+                "SELECT 1 FROM telegram_alerts WHERE symbol=? AND tf=? AND event_key NOT LIKE 'tg:%' LIMIT 1",
+                (symbol, tf),
+            )
+        return cur.fetchone() is not None
+
+    @_locked
+    def is_telegram_alert_sent(self, event_key: str) -> bool:
+        cur = self.conn.execute(
+            "SELECT 1 FROM telegram_alerts WHERE event_key=? LIMIT 1",
+            (event_key,),
+        )
+        return cur.fetchone() is not None
+
+    @_locked
+    def record_telegram_alerts(self, rows: list):
+        """Insert (event_key, symbol, tf, event_type, direction, event_time, sent_at) rows."""
+        if not rows:
+            return
+        self.conn.executemany(
+            "INSERT OR IGNORE INTO telegram_alerts"
+            "(event_key, symbol, tf, event_type, direction, event_time, sent_at) "
+            "VALUES(?,?,?,?,?,?,?)",
+            rows,
+        )
+        self.conn.commit()
 
     @_locked
     def close(self):

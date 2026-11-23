@@ -218,6 +218,35 @@ execution:
   poll_seconds: 15           # how often the execution engine scans for fresh setups
   comment: ai-trader         # order comment visible in MT5
 
+# ============================================================
+# TELEGRAM ALERTS — push notifications for CHoCH & BOS breaks
+# ============================================================
+# Create a bot via @BotFather to get bot_token, and fetch your chat_id
+# via @userinfobot or https://api.telegram.org/bot<TOKEN>/getUpdates.
+# Credentials can be placed here OR supplied via environment variables
+# (TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID) when the fields below are empty.
+telegram:
+  enabled: false               # master switch (or toggle live from the dashboard)
+  bot_token: ""                # e.g. "123456789:AAH..." (empty -> $TELEGRAM_BOT_TOKEN)
+  chat_id: ""                  # e.g. "-1001234567890" or "987654321" (empty -> $TELEGRAM_CHAT_ID)
+  bot_token_env: TELEGRAM_BOT_TOKEN
+  chat_id_env: TELEGRAM_CHAT_ID
+  events: [choch, bos]         # event types to alert on: choch, bos
+  timeframes: []               # empty = follow mtf.entry_tf (e.g. [M15]); or explicit e.g. [M15, H1]
+  symbols: []                  # empty = all enabled/visible symbols; or allowlist e.g. [EURUSD, XAUUSD]
+  max_event_age_bars: 2        # ignore events older than N bars from the latest analyzed bar
+  quiet_hours: null            # optional UTC window to mute alerts, e.g. "22-06" (null = always)
+  timeout: 10                  # HTTP timeout in seconds for Telegram Bot API calls
+  # Optional list of additional (or multiple) bot tokens / chat targets.
+  # Each item inherits events/timeframes/symbols/quiet_hours unless overridden:
+  bots: []
+  #   - name: swing-bot
+  #     bot_token: "987654321:BBH..."    # or bot_token_env: TG_SWING_TOKEN
+  #     chat_id: "-1009876543210"        # or chat_id_env: TG_SWING_CHAT
+  #     events: [choch]
+  #     timeframes: [H1, H4]
+  #     symbols: [EURUSD, XAUUSD]
+
 dashboard:
   debug: true               # verbose console output — shows exactly what each
                             # analysis cycle / retrain / bar-close is doing
