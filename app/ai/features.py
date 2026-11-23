@@ -8,10 +8,12 @@ import math
 import pandas as pd
 
 FEATURES = [
-    # ----- setup-specific (11) -----
+    # ----- setup-specific (12) -----
     "rr",                  # risk:reward of the setup
     "atr_pct",             # volatility (ATR / price * 100)
+    "atr_regime_ratio",    # current atr_pct / symbol_avg_atr_pct (volatility expansion)
     "range_position",      # entry position in the dealing range (0=bottom, 1=top)
+    "zone_dist_atr",       # distance from current close to limit entry (ATR units)
     "sweep_depth_atr",     # sweep wick beyond the level (ATR units)
     "sweep_recency",       # 0 = sweep just happened, 1 = old/none
     "confluence_count",    # number of SMC confluences
@@ -20,15 +22,17 @@ FEATURES = [
     "hour_sin",            # time-of-day encoding (session effects)
     "hour_cos",
 
-    # ----- per-symbol context (4) -----
+    # ----- per-symbol context (3) -----
     "symbol_avg_atr_pct",      # mean volatility of this pair (near-constant per symbol)
     "symbol_recent_win_rate",  # rolling win rate over recent setups (None on cold-start)
     "symbol_avg_rr_realized",  # mean realized RR on this pair (None on cold-start)
 
-    # ----- MTF confluence (4) — H1/H4 context projected onto the entry TF -----
+    # ----- MTF & CSM confluence (5) — H1/H4 & currency strength context -----
     "htf_trend_align",         # mean(1 HTF trend matches direction, 0 opposed); 0.5 = no ctx
     "htf_pd_alignment",        # mean(1 entry in correct HTF premium/discount half)
     "htf_tp_distance_atr",     # entry -> nearest HTF liquidity pool (ATR units, cap 20)
+    "rr_x_htf_align",          # interaction: target RR * HTF trend alignment
+    "csm_aligned",             # +1 CSM aligns with direction, -1 opposed, 0 neutral/unknown
 
     # ----- rejection-bar family (RejectionProto port; neutral for zone setups) -----
     "is_rejection",            # 1 = rejection-bar setup family, 0 = OB/FVG zone setup
@@ -40,7 +44,8 @@ FEATURES = [
 def make_features(df, setup: dict, smc: dict, cfg: dict,
                   symbol_static: dict = None,
                   symbol_dynamic: dict = None,
-                  htf_ctx: dict = None) -> dict:
+                  htf_ctx: dict = None,
+                  csm_dir: str = None) -> dict:
     """Build the full feature dict for one setup.
 
     Args:
@@ -116,10 +121,30 @@ def make_features(df, setup: dict, smc: dict, cfg: dict,
     else:
         rej_exp, rej_clv, rej_bucket = 0.0, 50.0, 2
 
+    rr_val = float(setup["rr"])
+    atr_pct_val = float(atr_v / close * 100.0)
+    sym_avg_atr = float((symbol_static or {}).get("symbol_avg_atr_pct", 0.0))
+    atr_ratio = (atr_pct_val / sym_avg_atr) if sym_avg_atr > 1e-9 else 1.0
+    htf_ta_val = float(trend_align) if trend_align is not None else 0.5
+
+    # CSM alignment: csm_dir is "up" | "down" | None (or "long" | "short")
+    csm_val = 0.0
+    if csm_dir in ("up", "long"):
+        csm_val = 1.0 if direction == "long" else -1.0
+    elif csm_dir in ("down", "short"):
+        csm_val = -1.0 if direction == "long" else 1.0
+    else:
+        for line in setup.get("confluences") or ():
+            if "CSM aligned" in line:
+                csm_val = 1.0
+                break
+
     return {
-        "rr": float(setup["rr"]),
-        "atr_pct": float(atr_v / close * 100.0),
+        "rr": rr_val,
+        "atr_pct": atr_pct_val,
+        "atr_regime_ratio": float(min(5.0, max(0.0, atr_ratio))),
         "range_position": float(setup["range_position"]),
+        "zone_dist_atr": float(setup.get("entry_distance_atr", abs(close - entry) / atr_v)),
         "sweep_depth_atr": float(depth),
         "sweep_recency": float(recency),
         "confluence_count": float(len(setup["confluences"])),
@@ -127,12 +152,14 @@ def make_features(df, setup: dict, smc: dict, cfg: dict,
         "trend_alignment": 1.0 if setup.get("trend_aligned") else 0.0,
         "hour_sin": math.sin(2 * math.pi * hour / 24.0),
         "hour_cos": math.cos(2 * math.pi * hour / 24.0),
-        "symbol_avg_atr_pct": float((symbol_static or {}).get("symbol_avg_atr_pct", 0.0)),
+        "symbol_avg_atr_pct": sym_avg_atr,
         "symbol_recent_win_rate": (symbol_dynamic or {}).get("symbol_recent_win_rate"),
         "symbol_avg_rr_realized": (symbol_dynamic or {}).get("symbol_avg_rr_realized"),
-        "htf_trend_align": float(trend_align) if trend_align is not None else 0.5,
+        "htf_trend_align": htf_ta_val,
         "htf_pd_alignment": float(pd_align) if pd_align is not None else 0.5,
         "htf_tp_distance_atr": float(min(cap, max(0.0, tp_dist_atr))),
+        "rr_x_htf_align": float(rr_val * htf_ta_val),
+        "csm_aligned": csm_val,
         "is_rejection": 1.0 if (setup.get("setup_kind") == "rejection" or bool(rej)) else 0.0,
         "rej_exp": rej_exp,
         "rej_clv": rej_clv,
@@ -148,7 +175,7 @@ def feature_vector(feats: dict):
         if v is None:
             if f == "symbol_recent_win_rate":
                 out.append(0.5)
-            elif f == "symbol_avg_rr_realized":
+            elif f in ("symbol_avg_rr_realized", "atr_regime_ratio"):
                 out.append(1.0)
             elif f in ("htf_trend_align", "htf_pd_alignment"):
                 out.append(0.5)
@@ -156,6 +183,10 @@ def feature_vector(feats: dict):
                 out.append(20.0)
             elif f == "rej_clv":
                 out.append(50.0)
+            elif f == "rr_x_htf_align":
+                rr_f = feats.get("rr")
+                ta_f = feats.get("htf_trend_align")
+                out.append(float(rr_f) * (float(ta_f) if ta_f is not None else 0.5) if rr_f is not None else 1.0)
             else:
                 out.append(0.0)
         else:

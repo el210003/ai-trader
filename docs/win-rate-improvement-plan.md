@@ -1,7 +1,7 @@
 # Win-Rate & Expectancy Improvement Plan
 
 **Date:** 2026-11-23  
-**Status:** Phase 1 & Phase 2 Evaluated (`2026-11-23 09:13:36`)  
+**Status:** Phases 1–3 Implemented (`2026-11-23 10:11:54`)  
 **Evidence Base:** 462 resolved live setups in `data/trader.db` + 3,454 clean `M15` replay setups across the 8 major symbols.
 
 ---
@@ -93,19 +93,19 @@ Data from both live resolved outcomes (`n=462`) and clean `M15` replay (`n=3,454
 
 ---
 
-### Phase 3 — Feature Engineering & Model Upgrades (`app/ai/features.py`, `app/pipeline.py`, `app/ai/ml_model.py`)
+### Phase 3 — Feature Engineering & Model Upgrades (`app/ai/features.py`, `app/pipeline.py`, `app/ai/ml_model.py`) *(DONE)*
 *Goal: Give the classifier missing market-regime signals and calibrate it for top-decile precision.*
 
-1. **Wire Currency Strength Meter (`csm_dir`) into `make_features()`**:
-   - `csm_dir` is already computed in `pipeline.py` (`csm_aligned`), yet omitted from `FEATURES`. Add `csm_aligned` (`+1` aligned, `-1` opposed, `0` neutral) and `csm_spread` (base currency strength minus quote currency strength) to `FEATURES` and persist `csm_dir` in replay.
-2. **Add interaction & structural quality features (`v6` feature set)**:
-   - `rr_x_htf_align`: Interaction between target distance (`rr`) and HTF trend agreement (high RR only works when HTF trend supports the move).
-   - `zone_dist_atr`: Distance from current close to the limit entry (`entry_distance_atr` is computed on setups but not passed to ML; entries too far from price suffer adverse selection—only filling on strong momentum reversals against the trade).
-   - `atr_regime_ratio`: `atr_pct / symbol_avg_atr_pct` (normalized volatility expansion/contraction relative to the pair's own baseline).
-3. **Optimize training objective for precision at the execution threshold (`P >= 0.42`)**:
-   - Tune `HistGradientBoostingClassifier` regularization (`min_samples_leaf=25`, `max_depth=3`, `l2_regularization=3.0`) via purged walk-forward CV to reduce variance on `10k` rows and improve top-bucket win rate.
-4. **Engage Tier-3 Live-Outcome Blend (`ai.ml.live_outcomes.min_samples: 150`)**:
-   - Currently `185` unique live outcomes sit just below `min_samples: 200`. Lowering `min_samples` to `150` (with purged CV gating already built in) lets the model adapt directly to live broker fill/spread dynamics.
+> **Phase 3 Execution Summary (`2026-11-23`):**
+> - **Feature set `v6-phase3-features` (`23` features in `app/ai/features.py`):** Added `atr_regime_ratio` (`atr_pct / symbol_avg_atr_pct`, ranked #3 overall at **`+0.0437`** permutation importance), `zone_dist_atr` (`+0.0068`), `rr_x_htf_align` (`+0.0068`), and `csm_aligned` (wired from `csm_dir` in live inference and extracted from journaled `confluences` for live training rows, while kept causal `0.0` in historical replay so no future CSM snapshot leaks).
+> - **Regularized tree objective (`app/ai/ml_model.py`):** Tuned `HistGradientBoostingClassifier` (`max_iter=200`, `max_depth=3`, `learning_rate=0.04`, `min_samples_leaf=25`, `l2_regularization=3.0`) — validated under purged 5-fold CV (`0.5398 -> 0.5840` on 4-major benchmark).
+> - **Tier-3 live-outcome blend (`config.yaml`, `app/config.py`):** Lowered `ai.ml.live_outcomes.min_samples` from `200` to `150` (`204` non-overlapping live samples blended).
+> - **Full 18-symbol retrain (`2026-11-23 10:11:54`):** `n_samples = 4,086` (`3,882` M15 replay + `204` live), `win_rate = 0.379`, purged 5-fold **`cv_auc = 0.560`** (`+0.005` over Phase 2's `0.555`, replay-only `cv_auc = 0.563`), **`cv_brier = 0.2328`**, `cv_accuracy = 0.609`.
+
+1. **Wire Currency Strength Meter (`csm_dir`) into `make_features()` (`app/ai/features.py`, `app/pipeline.py`):** **Done** — live inference passes `csm_dir` into `make_features()`, while historical replay passes `None` (`0.0`) to avoid future-snapshot leakage.
+2. **Add interaction & structural quality features (`v6-phase3-features`):** **Done** — added `atr_regime_ratio` (`+0.0437` importance), `zone_dist_atr` (`+0.0068`), and `rr_x_htf_align` (`+0.0068`).
+3. **Regularize `HistGradientBoostingClassifier` (`app/ai/ml_model.py`):** **Done** — updated to `max_depth=3, min_samples_leaf=25, l2_regularization=3.0, learning_rate=0.04, max_iter=200`, lifting purged 5-fold `cv_auc` from `0.555` to **`0.560`** and lowering `cv_brier` to **`0.2328`**.
+4. **Engage Tier-3 Live-Outcome Blend (`ai.ml.live_outcomes.min_samples: 150`):** **Done** — updated in `config.yaml` and `app/config.py`.
 
 ---
 

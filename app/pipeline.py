@@ -125,7 +125,7 @@ def analyze_symbol(store: Store, symbol: str, tf: str, cfg: dict,
         # outcomes of this symbol (see dynamic_features_live).
         s["features"] = make_features(df, s, smc, cfg["smc"],
                                       symbol_static=static, symbol_dynamic=dynamic,
-                                      htf_ctx=htf_ctx)
+                                      htf_ctx=htf_ctx, csm_dir=csm_dir)
         s["ml_prob"] = ml.predict(s["features"])
 
     best = {}
@@ -527,6 +527,9 @@ def _replay_symbol(symbol: str, tfs: list, store, cfg: dict,
     skip_msgs: list = []
     symbol_stats = SymbolStats()
     mtf_on = cfg.get("mtf", {}).get("enabled", True)
+    # Do not pass a static tip-of-DB CSM snapshot into historical replay (would leak
+    # present-day currency strength into past bars); replay passes None (neutral 0.0)
+    # unless historical CSM snapshots exist, while live inference passes live csm_dir.
 
     for tf in tfs:
         df = store.load_candles(symbol, tf)
@@ -572,6 +575,7 @@ def _replay_symbol(symbol: str, tfs: list, store, cfg: dict,
                     htf_ctx = {}
                 setups = build_setups(symbol, tf, sub, smc, cfg["smc"],
                                       htf_ctx=htf_ctx,
+                                      csm_dir=None,
                                       mtf_cfg=cfg.get("mtf", {}))
             except Exception:
                 continue
@@ -589,7 +593,8 @@ def _replay_symbol(symbol: str, tfs: list, store, cfg: dict,
                 s["features"] = make_features(sub, s, smc, cfg["smc"],
                                               symbol_static=static,
                                               symbol_dynamic=dynamic,
-                                              htf_ctx=htf_ctx)
+                                              htf_ctx=htf_ctx,
+                                              csm_dir=None)
                 rows.append(s["features"])
                 labels.append(y)
                 timestamps.append(int(s["formed_at"]))

@@ -117,7 +117,7 @@ ai:
     calibration: sigmoid     # sigmoid (smooth Platt log-odds) | isotonic
     live_outcomes:          # tier-3: blend resolved live outcomes into training
       enabled: true         # trains blended vs replay-only, keeps better cv_auc
-      min_samples: 200      # do not blend below this many resolved live outcomes
+      min_samples: 150      # do not blend below this many resolved live outcomes
     auto_retrain:            # model-drift safety net (see docs/ml-method.md)
       enabled: true
       max_age_days: 7        # model older than this is considered stale

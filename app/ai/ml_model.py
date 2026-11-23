@@ -17,7 +17,7 @@ from .features import FEATURES, feature_vector
 # bump when setup-construction behavior changes (retest buffer, validity
 # window, gates...) - when it changes, deployed models auto-retrain to stay
 # aligned with the setup distribution they predict.
-BUILDER_VERSION = "v5-phase2-builder"
+BUILDER_VERSION = "v6-phase3-features"
 
 
 def _build_model(backend: str):
@@ -25,8 +25,8 @@ def _build_model(backend: str):
     CPU automatically (the fit call is where a missing GPU surfaces)."""
     if backend == "xgboost":
         from xgboost import XGBClassifier
-        params = dict(n_estimators=250, max_depth=4, learning_rate=0.06,
-                      min_child_weight=10, reg_lambda=1.0, random_state=42,
+        params = dict(n_estimators=200, max_depth=3, learning_rate=0.04,
+                      min_child_weight=25, reg_lambda=3.0, random_state=42,
                       tree_method="hist", eval_metric="logloss", n_jobs=4)
         try:
             return XGBClassifier(**params, device="cuda"), "xgboost-cuda"
@@ -34,8 +34,8 @@ def _build_model(backend: str):
             return XGBClassifier(**params, device="cpu"), "xgboost-cpu"
     from sklearn.ensemble import HistGradientBoostingClassifier
     return (HistGradientBoostingClassifier(
-        max_iter=250, max_depth=4, learning_rate=0.06,
-        min_samples_leaf=10, l2_regularization=1.0, random_state=42), "sklearn")
+        max_iter=200, max_depth=3, learning_rate=0.04,
+        min_samples_leaf=25, l2_regularization=3.0, random_state=42), "sklearn")
 
 
 def _logit(p: np.ndarray) -> np.ndarray:

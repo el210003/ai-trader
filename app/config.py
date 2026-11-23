@@ -53,7 +53,7 @@ DEFAULTS = {
             "calibration": "sigmoid",       # sigmoid (smooth Platt) | isotonic
             "live_outcomes": {              # tier-3: blend resolved live outcomes
                 "enabled": True,
-                "min_samples": 200,
+                "min_samples": 150,
             },
             "auto_retrain": {
                 "enabled": True,
