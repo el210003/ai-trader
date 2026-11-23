@@ -1,7 +1,7 @@
 # Win-Rate & Expectancy Improvement Plan
 
 **Date:** 2026-11-23  
-**Status:** Phase 1 Implemented (`2026-11-23 08:45:45`)  
+**Status:** Phase 1 & Phase 2 Evaluated (`2026-11-23 09:13:36`)  
 **Evidence Base:** 462 resolved live setups in `data/trader.db` + 3,454 clean `M15` replay setups across the 8 major symbols.
 
 ---
@@ -74,15 +74,22 @@ Data from both live resolved outcomes (`n=462`) and clean `M15` replay (`n=3,454
 
 ---
 
-### Phase 2 — Setup Builder & Entry Quality Upgrades (`app/engine/setup_builder.py`)
+### Phase 2 — Setup Builder & Entry Quality Upgrades (`app/engine/setup_builder.py`, `app/pipeline.py`) *(DONE — Empirical A/B Gated)*
 *Goal: Improve fill quality and prioritize higher-probability entry mechanics.*
 
-1. **Require a recent directional liquidity sweep for zone setups (`require_zone_sweep: true`)**:
-   - Currently `setup_builder.py` allows zone entries whenever `aligned OR recent` (`line 277`), meaning a zone with **no liquidity sweep** can trigger solely on trend alignment. Requiring `recent` sweep confirmation (`sweep_depth_atr` is the #2 strongest feature in the ML model at `+0.047` AUC importance) filters out un-swept inducement zones.
-2. **Prefer Rejection-Bar setups when both Rejection and Zone setups fire in the same direction**:
-   - In `pipeline.py` (`best[direction]`), candidate ranking currently uses `(ml_prob, len(confluences))`. Because zone setups accumulate more text confluence lines (`6+` vs `3–4`), zone setups routinely beat rejection setups (`50.0%` live WR) on tie-breaks. Adding a family priority or letting `is_rejection` carry explicit preference preserves high-WR rejection triggers.
-3. **Tighten `smc.entry_valid_bars` for zone setups from `24` (6h) to `12` (3h)**:
-   - Stale zones that take 4–6 hours to retest have usually lost order-flow momentum (`zone_freshness` is positively correlated with win rate in both live terciles and replay).
+> **Phase 2 Execution & A/B Verification (`2026-11-23`):**
+> - **Implemented & kept — Rejection-bar selection tie-break (`app/pipeline.py`):** Updated `best[direction]` ranking to `(round(ml_prob, 3), is_rej, len(confluences))` so high-WR rejection-bar setups (`45.5%` replay WR, `50.0%` live WR) are no longer beaten on confluence-string-length tie-breaks by zone setups.
+> - **Implemented & kept — Configurable `smc.require_zone_sweep` hook (`app/engine/setup_builder.py`, `app/config.py`, `config.yaml`):** Added the `require_zone_sweep` config knob and `BUILDER_VERSION = "v5-phase2-builder"`.
+> - **Empirically tested & reverted `require_zone_sweep: true` and `entry_valid_bars: 12`:** Controlled ablation on `M15` (`EURUSD`, `GBPUSD`, `USDJPY`) showed both hard filters *reduced* zone win rate and expectancy when combined with Phase 1 (`require_htf_bias: true`):
+>   - `require_zone_sweep=False, entry_valid_bars=24`: `n=658`, WR **`37.8%`**, Exp **`+0.041R`** (baseline kept)
+>   - `require_zone_sweep=True,  entry_valid_bars=24`: `n=550`, WR `35.3%`, Exp `-0.040R`
+>   - `require_zone_sweep=False, entry_valid_bars=12`: `n=659`, WR `35.7%`, Exp `-0.014R`
+>   - `require_zone_sweep=True,  entry_valid_bars=12`: `n=539`, WR `33.8%`, Exp `-0.080R`
+> - Kept `require_zone_sweep: false` and `entry_valid_bars: 24` and retrained the production model (`n_samples = 4,086`, `win_rate = 0.379`, `cv_auc = 0.555`, `cv_brier = 0.2331`).
+
+1. **Configurable `smc.require_zone_sweep` (`app/engine/setup_builder.py`, `config.yaml`):** Implemented the config toggle; kept `false` after ablation proved HTF-aligned trend continuation zones without a sweep are profitable (`+0.041R` vs `-0.040R`).
+2. **Prefer Rejection-Bar setups when both Rejection and Zone setups fire in the same direction (`app/pipeline.py`):** **Done** — `best[direction]` now breaks close `ml_prob` ties (`round(ml_prob, 3)`) in favor of `is_rejection` before `len(confluences)`.
+3. **Zone validity window (`smc.entry_valid_bars`):** Tested `12` vs `24` bars; kept `24` bars (`6h`) because cutting to `12` bars dropped expectancy from `+0.041R` to `-0.014R`.
 
 ---
 
