@@ -24,11 +24,17 @@ def _atr_series(df, period: int = 14):
 class SymbolStats:
     """Compute per-symbol context features for ML training and inference."""
 
-    def __init__(self, lookback_setups: int = 200, min_samples: int = 30,
-                 atr_period: int = 14):
+    def __init__(self, lookback_setups: int = 200, min_samples: int = 10,
+                 atr_period: int = 14, static_window_bars: int = 500,
+                 prior_weight: float = 10.0, prior_win_rate: float = 0.38,
+                 prior_rr: float = 0.10):
         self.lookback = int(lookback_setups)
         self.min_samples = int(min_samples)
         self.atr_period = int(atr_period)
+        self.static_window = int(static_window_bars)
+        self.prior_weight = float(prior_weight)
+        self.prior_win_rate = float(prior_win_rate)
+        self.prior_rr = float(prior_rr)
         self._static_cache: dict = {}   # symbol -> {avg_atr_pct, setup_density}
 
     def invalidate(self, symbol=None):
@@ -39,17 +45,19 @@ class SymbolStats:
 
     # ------------------------------------------------------------ public
     def static_features(self, df, symbol: str) -> dict:
-        """Time-invariant per-symbol features (avg volatility, density)."""
+        """Trailing-window per-symbol volatility & density (causal when given
+        a prefix slice; bounded window avoids multi-year regime drift)."""
         if symbol in self._static_cache:
             return self._static_cache[symbol]
-        if len(df) < 5:
+        sub = df.iloc[-self.static_window:] if self.static_window > 0 and len(df) > self.static_window else df
+        if len(sub) < 5:
             feats = {"symbol_avg_atr_pct": 0.0, "symbol_setup_density": 0.0}
         else:
-            atr = _atr_series(df, self.atr_period).dropna()
-            atr_pct = (atr / df["close"]).dropna()
+            atr = _atr_series(sub, self.atr_period).dropna()
+            atr_pct = (atr / sub["close"]).dropna()
             avg_atr_pct = float(atr_pct.mean() * 100.0) if len(atr_pct) else 0.0
             avg_atr = float(atr.mean()) if len(atr) else 0.0
-            avg_close = float(df["close"].mean())
+            avg_close = float(sub["close"].mean())
             if avg_atr > 0 and avg_close > 0:
                 avg_atr_rel = avg_atr / avg_close
                 # inverse bars-per-ATR: high-vol pairs -> higher density
@@ -62,11 +70,12 @@ class SymbolStats:
         return feats
 
     def dynamic_features(self, history: list) -> dict:
-        """Rolling win rate + realized RR from past outcomes (no look-ahead:
-        caller passes only outcomes that formed before the current setup).
+        """Rolling win rate + realized RR from past resolved outcomes (no look-ahead:
+        caller passes only outcomes already resolved at or before the current bar).
 
-        `history` items: {"formed_index", "label" (0|1), "realized_rr"}
-        None values signal cold-start (< min_samples historical setups).
+        Applies Bayesian shrinkage toward the global prior so small sample
+        counts (`>= min_samples`) smoothly transition from cold-start instead of
+        jumping noisily or staying None for 100% of live setups.
         """
         if len(history) < self.min_samples:
             return {"symbol_recent_win_rate": None,
@@ -76,9 +85,12 @@ class SymbolStats:
         labels = [h["label"] for h in recent if h.get("label") is not None]
         rrs = [h["realized_rr"] for h in recent if h.get("realized_rr") is not None]
 
+        w = self.prior_weight
+        wr = ((sum(labels) + w * self.prior_win_rate) / (len(labels) + w)) if labels else None
+        rr = ((sum(rrs) + w * self.prior_rr) / (len(rrs) + w)) if rrs else None
         return {
-            "symbol_recent_win_rate": (sum(labels) / len(labels)) if labels else None,
-            "symbol_avg_rr_realized": (sum(rrs) / len(rrs)) if rrs else None,
+            "symbol_recent_win_rate": wr,
+            "symbol_avg_rr_realized": rr,
         }
 
     def dynamic_features_live(self, store, symbol: str) -> dict:

@@ -48,6 +48,8 @@ DEFAULTS = {
             "backend": "sklearn",
             "parallel": True,
             "workers": 0,
+            "train_entry_tf_only": True,    # when mtf.entry_tf is set, train only on entry TF
+            "calibration": "sigmoid",       # sigmoid (smooth Platt) | isotonic
             "live_outcomes": {              # tier-3: blend resolved live outcomes
                 "enabled": True,
                 "min_samples": 200,
@@ -68,7 +70,7 @@ DEFAULTS = {
             "min_ml_prob": 0.30,      # skip the LLM when ML win-prob is below this
             "cache_ttl": 900,         # identical setups reuse the LLM answer for N seconds
         },
-        "hybrid": {"ml_weight": 0.6, "llm_weight": 0.4, "buy_threshold": 60},
+        "hybrid": {"ml_weight": 0.6, "llm_weight": 0.4, "buy_threshold": 55},
     },
     "csm": {
         "enabled": True,
@@ -100,8 +102,8 @@ DEFAULTS = {
         "risk_percent": 1.0,           # % of balance risked per trade (SL-distance sizing)
         "fixed_lot": None,             # set a number to bypass risk-percent sizing
         "allow_min_lot": False,        # when sized lot < broker minimum: false=skip, true=trade min
-        "min_score": 70,               # hybrid final score required to execute
-        "min_ml_prob": 0.50,           # ML win probability required to execute
+        "min_score": 58,               # hybrid final score required to execute
+        "min_ml_prob": 0.40,           # ML win probability required to execute
         "max_open_positions": 3,       # total bot positions + pendings
         "max_per_symbol": 1,           # bot positions + pendings per symbol
         "max_trades_per_day": 5,       # daily cap (local midnight reset)

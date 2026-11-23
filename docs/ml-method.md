@@ -26,136 +26,126 @@ setups, applied to historical prefixes of the chart. Each setup is then
 
 ### Training-data generation pipeline
 
-For every `(symbol, timeframe)` pair in `config.yaml`:
+For every enabled symbol in `config.yaml` (and `mtf.entry_tf` when `ai.ml.train_entry_tf_only: true`, default `M15`; higher timeframes `H1`/`H4` still supply HTF confluence features):
 
-1. **Load** the full candle history from SQLite (`data/trader.db`).
+1. **Load** the full candle history from SQLite (`data/trader.db`; `--demo` runs automatically isolate to `data/demo_trader.db`).
 2. **Walk forward** through history. At every `step` bars (default `4`)
    starting from `warmup_bars` (default `300`), take the prefix
    `df.iloc[:i+1]`.
-3. **Run the full SMC engine on the prefix** — the exact same code path as
-   live analysis:
+3. **Assemble the exact SMC + MTF context** (`FastSMC` / `FastHTFContext` single-pass replay or per-step analyzer):
    - `find_swings`, `detect_structure` → BOS/CHoCH
    - `cluster_equal_levels`, `detect_sweeps` → liquidity pools & sweeps
    - `compute_dealing_range` → premium/discount
    - `find_order_blocks`, `find_fvgs` → OB/FVG zones
-   - `build_setups` → entry / SL / TP with confluence
+   - `detect_rejections` → rejection-bar spring/fakey triggers
+   - `build_htf_context` → causal H1/H4 structure, equilibrium, and liquidity pools (`htf_open + htf_sec <= up_to_time`)
+   - `build_setups` → zone & rejection setups with entry / SL / TP and confluence
 4. **For each setup produced, simulate its forward outcome** over
    `df.iloc[i+1 : i+1+H]` where `H = label_horizon_bars` (default `96`).
 
 ### The forward simulator
 
-`app/engine/labeler.py::label_setup` treats the setup as a **pending limit
-order**:
+`app/engine/labeler.py::label_setup_with_index` (and `label_setup`) treats the setup as a **pending limit order**:
 
 ```python
 filled = False
-for k in range(i+1, min(i+1+horizon, len(df))):
+end = min(i + 1 + horizon, len(df))
+limit_end = min(i + 1 + valid, len(df)) if valid > 0 else end
+for k in range(i + 1, end):
     hi = df['high'].iat[k]
     lo = df['low'].iat[k]
     if not filled:
-        if direction == 'long'  and lo <= entry: filled = True
-        elif direction == 'short' and hi >= entry: filled = True
+        if direction == 'long'  and lo <= entry + tol: filled = True
+        elif direction == 'short' and hi >= entry - tol: filled = True
+        elif k >= limit_end: return None, None
         else: continue
     # now in the trade — assume worst case on same-bar: SL first
     if direction == 'long':
-        if lo <= sl: return 0           # loss
-        if hi >= tp: return 1           # win
+        if lo <= sl: return 0, k         # loss
+        if hi >= tp: return 1, k         # win
     else:
-        if hi >= sl: return 0
-        if lo <= tp: return 1
-return 0  if filled else None           # timeout = loss; never-filled = drop
+        if hi >= sl: return 0, k
+        if lo <= tp: return 1, k
+return (0, end - 1) if filled else (None, None)
 ```
 
 Properties of this simulator:
 
 | Property | Effect |
 |---|---|
-| **Limit-order semantics** | The setup only counts as a trade once price comes back to the entry zone (retests the OB/FVG). |
+| **Limit-order semantics + expiry** | The setup only counts once price touches `entry ± fill_tolerance` within `entry_valid_bars` (`24` bars for zone setups, `8` bars for rejection retrace setups). |
 | **Same-bar SL-first** | If both SL and TP would have been hit on the same bar, it counts as a **loss** (conservative — assumes stops get filled first). |
 | **Timeout = loss** | If TP isn't reached within `horizon` bars, the sample is labeled `0` once filled (opportunity cost is real). |
-| **Never-filled = drop** | Setups that price never retested are excluded (`None`) — you can't learn from setups that never triggered. |
-
-The result is a list of `(features, label)` pairs:
-
-```python
-{"rr": 2.1, "atr_pct": 0.45, "range_position": 0.28, ...}   ->  1   # win
-{"rr": 1.6, "atr_pct": 0.38, "range_position": 0.71, ...}   ->  0   # loss
-```
+| **Never-filled = drop** | Setups that price never retested within their validity window are excluded (`None`). |
+| **Causal resolution index** | Returns `(label, resolved_index)` so replay dynamic features only use outcomes where `resolved_index <= i`. |
 
 ---
 
-## Features (15, hand-engineered)
+## Features (19, hand-engineered — `v5-rejection-flag`)
 
 Defined in `app/ai/features.py`. **No raw candles, no look-ahead bias** —
-every feature is computable from data available at the moment the setup
-formed.
+every feature is computable from data available at the moment the setup formed.
 
-### Setup-specific (11)
+### Setup-specific (10)
 
 | Feature | Type | What it encodes | Why it matters |
 |---|---|---|---|
-| `rr` | float | Risk:reward of the setup | Higher RR generally wins more often. |
+| `rr` | float | Risk:reward of the setup | Shapes base win-rate vs. payoff trade-off. |
 | `atr_pct` | float | Volatility — `ATR / close * 100` | Vol regimes change win rates. |
-| `range_position` | float in [0,1] | Position of entry inside the dealing range (0=bottom, 1=top) | Discount entries tend to work better for longs; premium for shorts. |
+| `range_position` | float | Position of entry inside the dealing range (0=bottom, 1=top) | Discount entries tend to work better for longs; premium for shorts. |
 | `sweep_depth_atr` | float | How far the aligned sweep wick went beyond its level (ATR units; 0 if no sweep) | Deeper sweeps = cleaner stop hunt. |
 | `sweep_recency` | float in [0,1] | 0 = sweep just happened; 1 = old / no recent sweep | Fresh sweep = stronger signal. |
 | `confluence_count` | float | Number of SMC confluences in the setup | Multi-factor setups win more. |
 | `zone_freshness` | float in [0,1] | 1 = OB/FVG just formed; 0 = old (relative to `ob_max_age_bars`) | Fresh zones haven't been "shopped" by previous retests. |
-| `is_order_block` | 0/1 | 1 if entry zone is an order block, 0 if FVG | Different zone types behave differently. |
 | `trend_alignment` | 0/1 | 1 if structure trend matches direction | Counter-trend setups lose more. |
 | `hour_sin` | float | Cyclic encoding of the bar's hour-of-day (sin) | Session effects (London / NY / Asian). |
 | `hour_cos` | float | Cyclic encoding of the bar's hour-of-day (cos) | Pairs with `hour_sin` to uniquely represent the time. |
 
-### Per-symbol context (4, added in the v2 feature set)
+### Per-symbol context (3)
 
 Computed by `app/ai/symbol_stats.py`. These let the **single global model**
-learn pair-specific quirks ("GBPUSD sweeps are noisier", "XAUUSD delivers
-higher realized RR") without maintaining per-symbol models or suffering
-cold-start:
+learn pair-specific quirks without maintaining per-symbol models:
 
-| Feature | What it encodes | Look-ahead protection |
+| Feature | What it encodes | Look-ahead & cold-start protection |
 |---|---|---|
-| `symbol_avg_atr_pct` | Mean volatility of this pair over its history | Time-invariant (whole-history stat); safe by construction. |
-| `symbol_setup_density` | Inverse bars-per-ATR — high-vol / trending signal | Time-invariant; safe by construction. |
-| `symbol_recent_win_rate` | Rolling win rate over the last 200 setups of this pair | Uses only setups with `formed_index < current.formed_index`. |
-| `symbol_avg_rr_realized` | Mean realized RR (TP-distance / risk) actually delivered on recent setups of this pair | Same — strictly prior outcomes only. |
+| `symbol_avg_atr_pct` | Mean ATR% over a trailing `500`-bar window of this pair | Computed on the causal prefix `sub` during replay; bounded window avoids multi-year regime drift. |
+| `symbol_recent_win_rate` | Bayesian-shrunk rolling win rate over the last 200 resolved setups (`(wins + 10*0.38)/(n + 10)`) | Uses only setups with `resolved_index <= i` in replay, and resolved `WIN`/`LOSS` rows from `outcomes` in live inference. |
+| `symbol_avg_rr_realized` | Bayesian-shrunk mean realized RR over the last 200 resolved setups (`(sum_rr + 10*0.10)/(n + 10)`) | Same — strictly resolved prior outcomes only. |
 
-**Cold-start handling:** on a brand-new pair with fewer than 30 labeled
-historical setups, the two dynamic features return `None`, which
-`feature_vector()` imputes with a neutral prior (0.5 win rate, 1.0 realized
-RR). The model treats this as "no information", not "bad information" —
-so new symbols get sensible predictions from day one, and the features
-sharp-up as the pair accumulates history.
+**Cold-start handling:** When a pair has fewer than `min_samples = 10` resolved setups, the two dynamic features return `None`, which `feature_vector()` imputes with a neutral prior (`0.5` win rate, `1.0` realized RR). Above 10 samples, Bayesian shrinkage (`prior_weight = 10`) smoothly blends empirical outcomes with the global prior.
 
-**Why not per-symbol models?** Each pair only generates ~100-300 labeled
-setups — too few to fit a 15-feature GBM per pair without overfitting, plus
-a cold-start gap and N-model maintenance burden. Feeding per-symbol *stats*
-into one global model captures most of the same signal with none of those
-costs.
+### MTF confluence (3)
+
+Projected from higher timeframes (`H1`, `H4`) onto the entry timeframe by `app/engine/mtf.py` (`htf_open + htf_sec <= up_to_time`):
+
+| Feature | What it encodes |
+|---|---|
+| `htf_trend_align` | Mean agreement of HTF (`H1`/`H4`) structure trend with setup direction (`0`–`1`; `0.5` when no HTF context). |
+| `htf_pd_alignment` | Mean agreement that entry sits in the favorable HTF discount/premium half (`0`–`1`; `0.5` when no HTF context). |
+| `htf_tp_distance_atr` | Distance from entry to the nearest HTF liquidity pool in the profit direction (entry-TF ATR units, capped at `20.0`). |
+
+### Rejection-bar family (3)
+
+Populated for rejection-bar setups (`app/smc/rejection.py`) and set to neutral priors for OB/FVG zone setups:
+
+| Feature | What it encodes |
+|---|---|---|
+| `is_rejection` | `1.0` if the setup comes from the rejection-bar family, `0.0` for OB/FVG zone setups. |
+| `rej_exp` | Rejection bar body expansion vs. 20-bar average body (`0.0` for zone setups). |
+| `rej_clv` | Close location value `%` (`50.0` neutral default for zone setups and missing legacy fields). |
 
 ---
 
-## Model
+## Model, Validation & Calibration
 
-**`HistGradientBoostingClassifier`** from scikit-learn — a LightGBM-style
-gradient boosting over histogrammed features.
-
-### Why this model
-
-- Handles **non-linear interactions** (e.g., sweep depth matters only when a
-  sweep actually occurred).
-- Robust to **correlated features** (several features overlap, e.g. confluence
-  count vs. sweep recency).
-- Trains fast on hundreds-to-thousands of rows.
-- Outputs **calibrated probabilities** via `predict_proba` — we use
-  `P(class = 1) = P(win)`.
+**`HistGradientBoostingClassifier`** from scikit-learn (or optional `XGBClassifier` via `ai.ml.backend: xgboost`) paired with an out-of-fold **Platt sigmoid calibrator** (`LogisticRegression` fit on out-of-fold log-odds).
 
 ### Hyperparameters
 
 ```python
 HistGradientBoostingClassifier(
     max_iter=250,            # number of boosting rounds
-    max_depth=4,             # shallow trees → less overfitting
+    max_depth=4,             # shallow trees -> less overfitting
     learning_rate=0.06,      # slow learning
     min_samples_leaf=10,     # require 10 samples per leaf
     l2_regularization=1.0,   # shrinkage
@@ -163,32 +153,12 @@ HistGradientBoostingClassifier(
 )
 ```
 
-Conservative on purpose: with only ~hundreds-to-thousands of samples and 16 features,
-deep trees overfit fast.
+### Purged Time-Series CV & Calibration Procedure
 
-### Training procedure
-
-```python
-X = np.array([feature_vector(r) for r in rows], dtype=float)   # (n_samples, 15)
-y = np.array(labels, dtype=int)                                 # (n_samples,)
-
-# 3-fold stratified CV if n >= 90, otherwise 2-fold
-auc_scores = cross_val_score(model, X, y, cv=n_splits, scoring="roc_auc")
-acc_scores = cross_val_score(model, X, y, cv=n_splits, scoring="accuracy")
-
-# permutation importance (real AUC drop when each feature is shuffled)
-perm = permutation_importance(model, X, y, n_repeats=5, scoring="roc_auc")
-
-# refit on ALL data → final model saved to disk
-model.fit(X, y)
-joblib.dump({"model": model, "features": FEATURES, "metrics": metrics},
-            "data/models/setup_classifier.joblib")
-```
-
-The CV scores are the **real evaluation** — they measure how well the model
-generalizes to *unseen* setups. The refit on all data is what's saved and
-used at inference. Permutation importances are stored in `metrics` and
-printed after every training run.
+1. **Purged chronological CV (`build_purged_cv_splits`):** Samples are ordered by `formed_at` and split into `5` contiguous time blocks. Training rows within `purge_seconds = label_horizon_bars * tf_minutes * 60` (`86,400s` = 96 M15 bars) of either validation boundary are purged so overlapping forward windows cannot leak across folds.
+2. **Smooth Platt calibration:** Out-of-fold predictions `p_oof` are transformed via `logit(p_oof)` and used to fit a 1D `LogisticRegression` calibrator (`ai.ml.calibration: sigmoid`). This eliminates the step-function plateaus of isotonic regression and produces smooth, monotone win probabilities.
+3. **Tier-3 live-outcome blend:** Once `store.live_training_samples()` accumulates at least `ai.ml.live_outcomes.min_samples` (`200`) non-overlapping resolved live setups, `train()` evaluates both blended and replay-only models via purged CV and keeps whichever achieves higher `cv_auc`.
+4. **Refit & persist:** The final classifier is fit on all selected training rows and saved alongside the calibrator, feature list, `BUILDER_VERSION`, metrics, and environment versions to `data/models/setup_classifier.joblib`.
 
 ### Baseline comparison
 
@@ -197,186 +167,53 @@ python -m app.main train --baseline    :: save metrics as the reference point
 python -m app.main train --compare     :: print delta vs the saved baseline
 ```
 
-The baseline lives in `data/ml_baseline.json`. Use it to validate feature
-changes on your real MT5 data: save a baseline with the old feature set,
-upgrade, retrain, compare. A meaningful improvement is **+0.005 AUC or
-more**; flat-or-worse means the new features are noise on your data.
+The baseline lives in `data/ml_baseline.json`. A meaningful improvement is **+0.005 AUC or more** under purged CV.
 
-### Auto-retrain on feature-set upgrade
+### Auto-retrain on feature/schema upgrade or drift
 
-When the deployed model was trained with an older feature set (e.g., before
-the per-symbol features were added), predictions from it would be silently
-wrong — the model file has 11 features but inference sends 15.
-
-`pipeline.model_needs_retrain()` detects this via a marker file
-(`data/models/.feature_set_v2_per_symbol`). On the first `analyze` after an
-upgrade, the pipeline **retrains once, transparently**, marks the model as
-current, and proceeds. Subsequent runs skip the retrain.
-
-To force a retrain manually: delete the marker file and run `analyze`.
-
-### Model drift: auto-retrain modes (Phase 2)
-
-The model also ages: markets drift, and a model trained months ago
-mis-calibrates. Config (`ai.ml.auto_retrain`):
-
-```yaml
-ai:
-  ml:
-    auto_retrain:
-      enabled: true
-      max_age_days: 7
-      on_refresh: warn     # warn | auto | manual
-```
-
-| Mode | Behavior |
-|---|---|
-| `warn` (default) | Dashboard ML badge turns amber and shows the model age (`ML: ready · 9.2d`); a **↻ Retrain** button appears. Clicking it runs the retrain in a background thread; the status line reports completion time. |
-| `auto` | Stale model is retrained **automatically** at the start of every dashboard refresh / `run` cycle, before analyzing. Transparent, just a longer refresh. |
-| `manual` | No warnings; retrain via `python -m app.main train` when you choose. |
-
-Staleness is `age_days >= max_age_days`, where `age_days` comes from the
-`trained_at` timestamp stored inside the model file. An unloadable or
-missing model is always considered stale.
-
-API surface:
-
-- `GET /api/meta` → `model_age_days`, `model_stale`, `auto_retrain` config
-- `POST /api/retrain` → background retrain (warn-mode button)
-- `GET /api/status` → `retraining` flag + `last_retrain` result
+- **Schema/pipeline hash (`data/models/.feature_set`):** `pipeline.feature_set_hash()` hashes `FEATURES`, `BUILDER_VERSION`, and the CV/calibration version. `model_needs_retrain()` checks both the marker file and the joblib blob's recorded `features` and `builder_version`, triggering a one-time automatic retrain via `ensure_model_current()` whenever the schema changes.
+- **Age-based drift (`ai.ml.auto_retrain`):** Flags or retrains models older than `max_age_days` (`7` days by default; `on_refresh: warn | auto | manual`).
 
 ---
 
 ## Reading the metrics
 
-A typical training run prints:
-
-```
-metrics: {'n_samples': 1999, 'win_rate': 0.217, 'cv_auc': 0.575,
-          'cv_accuracy': 0.749, 'feature_importances': {...}}
-```
-
-(Values from the synthetic demo dataset; your real MT5 numbers will differ.)
-
 | Metric | Meaning | How to read it |
 |---|---|---|
-| **`n_samples`** | Total labeled setups that filled within the horizon. | Should be **at least `ai.ml.min_train_samples`** (default `60`); more is better. |
-| **`win_rate`** | Fraction of those samples that hit TP before SL. | Tells you how often the engine's setups actually worked in history. With RR ≥ 1.5 you need >40% win rate to be profitable; 20–35% is typical on real data, 50%+ is suspiciously high (look-ahead leak). |
-| **`cv_accuracy`** | Mean accuracy across CV folds. | **Misleading on imbalanced data.** A model that always predicts "loss" also scores ~80% accuracy if 80% of samples are losses. Reported for completeness; not the metric to optimize. |
-| **`cv_auc`** | Mean ROC AUC across CV folds. | 0.5 = chance, 1.0 = perfect. The honest measure of model quality. On real SMC data expect **0.55–0.65** (small but real edge). Values >0.70 are suspicious. |
-
-### Why not optimize accuracy?
-
-Because accuracy on imbalanced data is a trap. The hybrid score uses
-`predict_proba` (raw probabilities), not hard 0/1 predictions, so the
-**ranking** and **calibration** of probabilities matter more than the cutoff.
-AUC measures ranking quality directly.
+| **`n_samples`** | Total labeled setups that filled within their validity window. | Should be at least `ai.ml.min_train_samples` (`60`). |
+| **`win_rate`** | Fraction of filled setups that hit TP before SL. | ~`0.37–0.39` on clean M15 data with `min_rr: 1.5`. |
+| **`cv_auc`** | Mean ROC AUC across purged chronological folds (`purged-time-5fold`). | `0.50` = chance; on leak-free FX M15 setups expect **`0.55–0.60`**. |
+| **`cv_brier`** | Out-of-fold Brier score after probability calibration. | Lower is better (calibrated base-rate ~`0.38` has uninformative Brier `0.236`; model achieves `~0.233`). |
+| **`cv_accuracy`** | Mean accuracy at a 0.50 cutoff. | Secondary on imbalanced data; `cv_auc` and `cv_brier` are primary. |
 
 ---
 
-## What the model does NOT do
-
-To set expectations:
-
-1. **No raw candle features** — only 15 hand-engineered structure features.
-   The model can't learn patterns it isn't told to look at.
-2. **No temporal sequence learning** — each setup is an independent row. The
-   history walk produces variety, but the model itself doesn't see
-   time-series patterns (no LSTM / Transformer).
-3. **No fundamental data** — purely price-structure-driven.
-4. **No commission / spread / slippage modeling** — the labeler uses raw
-   highs/lows. Production should subtract spread from the fill price and add
-   slippage to the stop.
-5. **Drifts over time** — market regimes change. The `ai.ml.auto_retrain`
-   safety net (badge + button in `warn` mode, automatic in `auto` mode)
-   keeps this manageable, but a weekly `python -m app.main train` is still
-   good hygiene.
-
----
-
-## Inference flow
+## Inference & Execution Flow
 
 ```
-SMC engine   → setup with 16 features
-             → model.predict_proba(features)  →  P(win) in [0, 1]
-                                                   ↓
-hybrid score = 0.6 * ml_score  +  0.4 * llm_confidence
-                                                   ↓
-   verdict:  BUY / SELL   if score ≥ 60  AND  LLM bias aligned
-             WAIT         if score < 60
-             AVOID        if LLM contradicts direction
+SMC + MTF engine -> setup with 19 features
+                 -> model.predict_proba(x) -> Platt sigmoid calibrator -> P(win)
+                                                                           |
+hybrid score = 0.6 * (P(win) * 100) + 0.4 * llm_confidence  (-20 if LLM disagrees)
+                                                                           |
+   verdict:   BUY / SELL   if final_score >= 55 (hybrid.buy_threshold) AND aligned
+              WAIT         if final_score < 55
+              AVOID        if LLM contradicts setup direction
+   execution: requires final_score >= 58 (execution.min_score) AND P(win) >= 0.40 (execution.min_ml_prob)
 ```
-
-The ML score is one voice among many. The LLM provides a second,
-narrative-driven judgment that can override (especially via `AVOID`).
 
 ---
 
-## Configuration knobs (`config.yaml` → `ai.ml.*`)
+## Configuration knobs (`config.yaml` -> `ai.ml.*`)
 
 | Key | Default | Meaning |
 |---|---|---|
-| `model_path` | `data/models/setup_classifier.joblib` | Where the trained model is saved / loaded. |
-| `label_horizon_bars` | `96` | Maximum forward window for the labeler. |
-| `label_step` | `4` | Step size between historical setup samples (smaller = more samples, slower training). |
+| `model_path` | `data/models/setup_classifier.joblib` | Where the trained model is saved / loaded (`demo_` prefixed when `--demo` is used). |
+| `label_horizon_bars` | `96` | Maximum forward window for the labeler (and purge gap in purged CV). |
+| `label_step` | `4` | Step size between historical setup samples during training. |
 | `warmup_bars` | `300` | History required before generating training setups. |
-| `min_train_samples` | `60` | Minimum filled samples required to train; raises an error otherwise. |
-| `auto_retrain.enabled` | `true` | Master switch for the drift safety net. |
-| `auto_retrain.max_age_days` | `7` | Model older than this is considered stale. |
-| `auto_retrain.on_refresh` | `warn` | `warn` = dashboard badge + Retrain button; `auto` = retrain stale model on every refresh; `manual` = no warnings, CLI only. |
-
-### Environment metadata
-
-Every trained model stores its training environment inside the joblib blob
-(`numpy` / `sklearn` / `python` versions). The dashboard compares it against
-the runtime and flags a mismatch on the ML badge; `scripts/check_env.py`
-(or `check_env.bat`) verifies the whole environment — deps, model
-loadability, and training/runtime match. See
-[One environment for everything](../README.md#important-one-environment-for-everything)
-in the README: model files written by one numpy often cannot be read by
-another, so train and serve from the same interpreter (ideally the project
-venv).
-
----
-
-## Possible improvements
-
-- **Walk-forward validation** — train on bars `0..T`, test on `T..T+H`, then
-  roll forward. Replaces the static CV with a more realistic out-of-sample
-  test.
-- **Realistic costs** — subtract spread from fill price and add slippage to
-  stop-loss in `labeler.py`.
-- **More features** — multi-timeframe alignment (HTF trend + LTF entry),
-  session tags (London/NY/Asian), day-of-week, ATR ratio vs 20-bar MA.
-- **Calibration — implemented** (see docs/ml-model-review.md): an isotonic
-  calibrator fit on out-of-fold predictions, applied in predict() so the
-  probabilities are honest; the 0.30 ML gate and 60 threshold rely on it.
-  to make `predict_proba` outputs more numerically trustworthy.
-- **Class balancing** — use `class_weight='balanced'` or SMOTE if win rate
-  drops below 15%.
-- **Per-symbol outcome feedback loop** — the setups journal already records
-  outcomes; feed realized results back into `symbol_recent_win_rate` at
-  inference time (currently it's only used during training).
-- ~~Per-symbol models~~ — evaluated and rejected: see
-  [Per-symbol context](#per-symbol-context-4-added-in-the-v2-feature-set);
-  per-symbol *features* in one global model won.
-
-
-## MTF confluence features (v3)
-
-Four features project higher-timeframe context onto each entry-TF setup
-(computed by `app/engine/mtf.py`, stored per setup as `htf_metrics`):
-
-- `htf_trend_align` — mean agreement of HTF (H1/H4) structure trend with the
-  setup direction (0–1; 0.5 when no HTF context, e.g. setups on the top TF)
-- `htf_pd_alignment` — mean(1 if entry is in the HTF discount half for longs /
-  premium half for shorts)
-- `entry_in_htf_zone` — 1 if the entry zone overlaps or sits within
-  `mtf.zone_buffer_atr` of a same-direction HTF order block / FVG
-- `htf_tp_distance_atr` — distance from entry to the nearest HTF liquidity
-  pool in the profit direction (ATR units, capped at 20; 20 = no HTF target)
-
-No look-ahead: an HTF bar counts only when its close time ≤ the entry bar's
-open time — the same slicing runs in live analysis and the training replay.
-The deployed model auto-invalidates on feature-set change via a content hash
-of the FEATURES list (`data/models/.feature_set`).
+| `min_train_samples` | `60` | Minimum filled samples required to train. |
+| `train_entry_tf_only` | `true` | Train only on `mtf.entry_tf` (`M15`) when set; H1/H4 still provide HTF features. |
+| `calibration` | `sigmoid` | Out-of-fold probability calibrator: `sigmoid` (smooth Platt log-odds) or `isotonic`. |
+| `live_outcomes.enabled` | `true` | Blend resolved live outcomes once `min_samples` (`200`) is reached. |
+| `auto_retrain.enabled` | `true` | Master switch for the age-based drift safety net (`max_age_days: 7`, `on_refresh: warn`). |

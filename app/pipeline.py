@@ -409,7 +409,7 @@ def feature_set_hash() -> str:
     validity window, gates...) invalidates deployed models so they retrain,
     keeping the model aligned with the setup distribution it predicts."""
     import hashlib
-    payload = {"features": FEATURES, "builder": BUILDER_VERSION}
+    payload = {"features": FEATURES, "builder": BUILDER_VERSION, "cv_cal": "purged-sigmoid-v1"}
     return hashlib.md5(json.dumps(payload).encode()).hexdigest()[:12]
 
 
@@ -515,11 +515,11 @@ def _replay_symbol(symbol: str, tfs: list, store, cfg: dict,
     faster, bit-identical training rows -- see smc/fast_context.py).
     Set false for the exact per-step-analyzer path (slow).
     """
-    from .engine.labeler import label_setup
+    from .engine.labeler import label_setup_with_index
 
     fast_replay = bool(cfg.get("ai", {}).get("ml", {}).get("fast_replay", True))
 
-    rows, labels, rids = [], [], set()
+    rows, labels, timestamps, rids = [], [], [], set()
     history_by_pair: dict = {}
     made: dict = {}
     skip_msgs: list = []
@@ -533,7 +533,6 @@ def _replay_symbol(symbol: str, tfs: list, store, cfg: dict,
                              f"only {0 if df is None else len(df)} bars")
             continue
         n = len(df)
-        static = symbol_stats.static_features(df, symbol)
         history = history_by_pair.setdefault((symbol, tf), [])
         df_cache: dict = {}     # (symbol, htf) -> full HTF frame
         ctx_cache: dict = {}    # (symbol, htf) last closed HTF bar -> ctx
@@ -574,11 +573,15 @@ def _replay_symbol(symbol: str, tfs: list, store, cfg: dict,
                                       mtf_cfg=cfg.get("mtf", {}))
             except Exception:
                 continue
-            # dynamic features: only outcomes that formed before i (no look-ahead)
-            prior = [h for h in history if h["formed_index"] < i]
+            # dynamic & static features: strictly causal as of bar i (no look-ahead)
+            prior = [h for h in history if h["resolved_index"] <= i]
             dynamic = symbol_stats.dynamic_features(prior)
+            symbol_stats.invalidate(symbol)
+            static = symbol_stats.static_features(sub, symbol)
             for s in setups:
-                y = label_setup(df, s, horizon, entry_valid_bars=int(cfg.get("smc", {}).get("entry_valid_bars", 24)))
+                y, res_idx = label_setup_with_index(
+                    df, s, horizon,
+                    entry_valid_bars=int(cfg.get("smc", {}).get("entry_valid_bars", 24)))
                 if y is None:
                     continue
                 s["features"] = make_features(sub, s, smc, cfg["smc"],
@@ -587,9 +590,11 @@ def _replay_symbol(symbol: str, tfs: list, store, cfg: dict,
                                               htf_ctx=htf_ctx)
                 rows.append(s["features"])
                 labels.append(y)
+                timestamps.append(int(s["formed_at"]))
                 rids.add((symbol, tf, int(s["formed_at"]), s["direction"]))
                 history.append({
                     "formed_index": s["formed_index"],
+                    "resolved_index": res_idx,
                     "horizon_end_index": min(s["formed_index"] + horizon, n - 1),
                     "label": y,
                     "realized_rr": (abs(s["take_profit"] - s["entry"]) /
@@ -597,7 +602,8 @@ def _replay_symbol(symbol: str, tfs: list, store, cfg: dict,
                     if y == 1 else -1.0,
                 })
                 made[tf] += 1
-    return {"symbol": symbol, "rows": rows, "labels": labels, "replay_ids": rids,
+    return {"symbol": symbol, "rows": rows, "labels": labels,
+            "timestamps": timestamps, "replay_ids": rids,
             "made": made, "skip_msgs": skip_msgs}
 
 
@@ -654,9 +660,18 @@ def train(cfg: dict, store: Store = None, demo: bool = False,
     warmup = int(ml_cfg["warmup_bars"])
 
     sym_list = symbols if symbols is not None else list(cfg["symbols"])
-    symbol_stats = SymbolStats()
+    entry_tf = (cfg.get("mtf", {}).get("entry_tf") or "").strip().upper()
+    entry_only = bool(ml_cfg.get("train_entry_tf_only", True)) and bool(entry_tf)
+    train_tfs = [t for t in cfg["timeframes"] if t.strip().upper() == entry_tf] if entry_only else list(cfg["timeframes"])
+    if not train_tfs:
+        train_tfs = list(cfg["timeframes"])
 
-    rows, labels = [], []
+    from .engine.mtf import TF_MINUTES
+    max_tf_min = max((TF_MINUTES.get(t.strip().upper(), 15) for t in train_tfs), default=15)
+    purge_seconds = int(horizon * max_tf_min * 60)
+    cal_method = str(ml_cfg.get("calibration", "sigmoid"))
+
+    rows, labels, timestamps = [], [], []
     replay_ids: set = set()      # (symbol, tf, formed_at, direction) — tier-3 dedup
 
     # ---- replay: serial or parallel across symbols (the dominant training cost)
@@ -672,9 +687,9 @@ def train(cfg: dict, store: Store = None, demo: bool = False,
         import os as _os
         n_workers = workers if workers > 0 else max(1, min((_os.cpu_count() or 2) - 1, 8))
         if verbose:
-            print(f"  replaying {total_syms} symbols on {n_workers} workers...", flush=True)
+            print(f"  replaying {total_syms} symbols on {train_tfs} ({n_workers} workers)...", flush=True)
         try:
-            payloads = [(sym, list(cfg["timeframes"]), cfg["storage"]["path"], cfg,
+            payloads = [(sym, train_tfs, cfg["storage"]["path"], cfg,
                          warmup, horizon, step) for sym in sym_list]
             with ProcessPoolExecutor(max_workers=n_workers) as ex:
                 futures = [ex.submit(_replay_worker, p) for p in payloads]
@@ -683,6 +698,7 @@ def train(cfg: dict, store: Store = None, demo: bool = False,
                     sym_done[0] += 1
                     rows.extend(res["rows"])
                     labels.extend(res["labels"])
+                    timestamps.extend(res.get("timestamps") or [0] * len(res["rows"]))
                     replay_ids.update(res["replay_ids"])
                     if verbose:
                         el = time.time() - t_replay
@@ -697,11 +713,12 @@ def train(cfg: dict, store: Store = None, demo: bool = False,
             parallel = False
     if not parallel:
         for symbol in sym_list:
-            res = _replay_symbol(symbol, list(cfg["timeframes"]), store, cfg,
+            res = _replay_symbol(symbol, train_tfs, store, cfg,
                                  warmup, horizon, step)
             sym_done[0] += 1
             rows.extend(res["rows"])
             labels.extend(res["labels"])
+            timestamps.extend(res.get("timestamps") or [0] * len(res["rows"]))
             replay_ids.update(res["replay_ids"])
             if verbose:
                 for msg in res["skip_msgs"]:
@@ -712,62 +729,76 @@ def train(cfg: dict, store: Store = None, demo: bool = False,
     if stop_hb:
         stop_hb()
     if verbose:
-        print(f"  replay done: {len(rows)} samples in {time.time() - t_replay:.1f}s", flush=True)
+        print(f"  replay done: {len(rows)} samples on {train_tfs} in {time.time() - t_replay:.1f}s", flush=True)
 
     if not rows:
         raise RuntimeError("no labeled setups generated")
 
     # ---- tier 3: blend resolved live outcomes into the training set
     live_cfg = ml_cfg.get("live_outcomes", {})
-    live_rows, live_labels = [], []
+    live_rows, live_labels, live_ts = [], [], []
+    allowed_tfs = {t.strip().upper() for t in train_tfs}
     if live_cfg.get("enabled"):
         min_live = int(live_cfg.get("min_samples", 200))
         live = store.live_training_samples() if store else []
         # dedupe against replay rows by (symbol, tf, formed_at, direction)
         for s in live:
+            if s["tf"].strip().upper() not in allowed_tfs:
+                continue
             key = (s["symbol"], s["tf"], s["formed_at"], s["direction"])
             if key in replay_ids:
                 continue
             live_rows.append(s["features"])
             live_labels.append(s["label"])
+            live_ts.append(int(s["formed_at"]))
         if len(live_rows) < min_live:
             if verbose:
                 print(f"  [live-blend] {len(live_rows)} live samples < min {min_live} "
                       f"-- training on replay only")
-            live_rows, live_labels = [], []
+            live_rows, live_labels, live_ts = [], [], []
 
     ml = SetupML(ml_cfg["model_path"])
     backend = str(ml_cfg.get("backend", "sklearn"))
-    all_rows, all_labels = rows + live_rows, labels + live_labels
+    all_rows = rows + live_rows
+    all_labels = labels + live_labels
+    all_ts = timestamps + live_ts
     if verbose:
         print(f"  training {backend} model on {len(all_rows)} samples "
-              f"(fit + importance + cross-validation, may take a while)...", flush=True)
+              f"(fit + importance + purged CV + {cal_method} calibration)...", flush=True)
     t_fit = time.time()
     stop_hb = (_start_heartbeat(
         lambda: f" | fitting {backend} model on {len(all_rows)} samples")
         if verbose else None)
     try:
-        metrics = ml.train(all_rows, all_labels, min_samples=int(ml_cfg["min_train_samples"]),
-                           backend=backend)
+        metrics = ml.train(all_rows, all_labels,
+                           min_samples=int(ml_cfg["min_train_samples"]),
+                           backend=backend, timestamps=all_ts,
+                           purge_seconds=purge_seconds,
+                           calibration_method=cal_method)
     finally:
         if stop_hb:
             stop_hb()
+    metrics["train_tfs"] = train_tfs
     if verbose:
         print(f"  model trained in {time.time() - t_fit:.1f}s")
     if live_rows:
         metrics["n_live"] = len(live_rows)
-        # keep the better of blended vs replay-only by cv_auc
-        from sklearn.ensemble import HistGradientBoostingClassifier
-        from sklearn.model_selection import cross_val_score
+        # keep the better of blended vs replay-only by purged cv_auc
+        from sklearn.base import clone
+        from sklearn.metrics import roc_auc_score
         import numpy as _np
+        from .ai.ml_model import build_purged_cv_splits
         try:
-            m_tmp = HistGradientBoostingClassifier(
-                max_iter=250, max_depth=4, learning_rate=0.06,
-                min_samples_leaf=10, l2_regularization=1.0, random_state=42)
             X0 = _np.array([feature_vector(r) for r in rows], dtype=float)
             y0 = _np.array(labels, dtype=int)
-            n_split = 3 if len(y0) >= 90 else 2
-            auc0 = float(_np.mean(cross_val_score(m_tmp, X0, y0, cv=n_split, scoring="roc_auc")))
+            n_split = 5 if len(y0) >= 200 else (3 if len(y0) >= 90 else 2)
+            splits0, _ = build_purged_cv_splits(y0, timestamps=timestamps, n_splits=n_split, purge_seconds=purge_seconds)
+            aucs0 = []
+            for tr_i, va_i in splits0:
+                m_tmp = clone(ml.model)
+                m_tmp.fit(X0[tr_i], y0[tr_i])
+                aucs0.append(roc_auc_score(y0[va_i], m_tmp.predict_proba(X0[va_i])[:, 1]))
+            auc0 = float(_np.mean(aucs0))
             metrics["cv_auc_replay_only"] = round(auc0, 3)
             if metrics.get("cv_auc") is not None and auc0 > metrics["cv_auc"] + 0.01:
                 if verbose:
@@ -777,9 +808,14 @@ def train(cfg: dict, store: Store = None, demo: bool = False,
                 stop_hb2 = _start_heartbeat(
                     lambda: f" | fitting {backend} replay-only model on {len(rows)} samples")
                 try:
-                    metrics = ml.train(rows, labels, min_samples=int(ml_cfg["min_train_samples"]), backend=backend)
+                    metrics = ml.train(rows, labels,
+                                       min_samples=int(ml_cfg["min_train_samples"]),
+                                       backend=backend, timestamps=timestamps,
+                                       purge_seconds=purge_seconds,
+                                       calibration_method=cal_method)
                 finally:
                     stop_hb2()
+                metrics["train_tfs"] = train_tfs
                 metrics["n_live"] = 0
                 metrics["cv_auc_replay_only"] = round(auc0, 3)
         except Exception:

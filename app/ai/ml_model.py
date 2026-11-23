@@ -17,7 +17,7 @@ from .features import FEATURES, feature_vector
 # bump when setup-construction behavior changes (retest buffer, validity
 # window, gates...) - when it changes, deployed models auto-retrain to stay
 # aligned with the setup distribution they predict.
-BUILDER_VERSION = "v4-rejection-family"
+BUILDER_VERSION = "v5-rejection-flag"
 
 
 def _build_model(backend: str):
@@ -36,6 +36,51 @@ def _build_model(backend: str):
     return (HistGradientBoostingClassifier(
         max_iter=250, max_depth=4, learning_rate=0.06,
         min_samples_leaf=10, l2_regularization=1.0, random_state=42), "sklearn")
+
+
+def _logit(p: np.ndarray) -> np.ndarray:
+    p_clip = np.clip(p, 1e-6, 1.0 - 1e-6)
+    return np.log(p_clip / (1.0 - p_clip))
+
+
+def build_purged_cv_splits(y: np.ndarray, timestamps=None, n_splits: int = 5,
+                           purge_seconds: int = 0):
+    """Build leak-free CV splits.
+
+    When `timestamps` are provided, orders samples chronologically, splits into
+    `n_splits` contiguous time blocks, and purges training samples within
+    `purge_seconds` of either validation boundary so overlapping forward
+    horizons never leak across train/val. Falls back to shuffled
+    StratifiedKFold when timestamps are absent or a fold lacks both classes.
+    """
+    from sklearn.model_selection import StratifiedKFold
+
+    n = len(y)
+    if timestamps is not None and len(timestamps) == n and n >= n_splits * 20:
+        ts = np.asarray(timestamps, dtype=np.int64)
+        order = np.argsort(ts, kind="mergesort")
+        blocks = np.array_split(order, n_splits)
+        splits = []
+        for val_idx in blocks:
+            if len(val_idx) == 0:
+                continue
+            t_start = int(ts[val_idx[0]])
+            t_end = int(ts[val_idx[-1]])
+            # purge train rows whose horizon could overlap [t_start, t_end]
+            in_val = np.zeros(n, dtype=bool)
+            in_val[val_idx] = True
+            keep_tr = (~in_val) & (
+                (ts < t_start - purge_seconds) | (ts > t_end + purge_seconds)
+            )
+            tr_idx = np.where(keep_tr)[0]
+            if len(tr_idx) >= 30 and len(np.unique(y[tr_idx])) == 2 and len(np.unique(y[val_idx])) == 2:
+                splits.append((tr_idx, val_idx))
+        if len(splits) >= 2:
+            return splits, f"purged-time-{len(splits)}fold"
+
+    k = min(n_splits, max(2, int(np.bincount(y).min()))) if len(np.unique(y)) == 2 else 2
+    skf = StratifiedKFold(n_splits=k, shuffle=True, random_state=42)
+    return list(skf.split(np.zeros(n), y)), f"stratified-shuffled-{k}fold"
 
 
 class SetupML:
@@ -95,15 +140,24 @@ class SetupML:
             return None
         if self.calibrator is not None:
             try:
-                p = float(self.calibrator.predict(np.array([[p]]))[0])
+                if hasattr(self.calibrator, "predict_proba"):
+                    # Platt sigmoid calibrator fit on log-odds
+                    z = _logit(np.array([p], dtype=float)).reshape(-1, 1)
+                    p = float(self.calibrator.predict_proba(z)[0, 1])
+                else:
+                    # Legacy IsotonicRegression calibrator
+                    p = float(self.calibrator.predict(np.array([[p]]))[0])
                 p = min(1.0, max(0.0, p))
             except Exception:
                 pass
         return p
 
     def train(self, rows: list, labels: list, min_samples: int = 60,
-              backend: str = "sklearn") -> dict:
-        from sklearn.model_selection import cross_val_score
+              backend: str = "sklearn", timestamps=None,
+              purge_seconds: int = 0,
+              calibration_method: str = "sigmoid") -> dict:
+        from sklearn.base import clone
+        from sklearn.metrics import accuracy_score, brier_score_loss, roc_auc_score
 
         if len(rows) < min_samples:
             raise RuntimeError(
@@ -139,29 +193,50 @@ class SetupML:
             metrics["feature_importances"] = {
                 f: float(v) for f, v in zip(FEATURES, importances)
             }
+
+        oof_prob = np.full(len(y), np.nan, dtype=float)
         try:
-            n_splits = 3 if len(y) >= 90 else 2
-            auc = cross_val_score(model, X, y, cv=n_splits, scoring="roc_auc")
-            acc = cross_val_score(model, X, y, cv=n_splits, scoring="accuracy")
-            metrics["cv_auc"] = round(float(np.mean(auc)), 3)
-            metrics["cv_accuracy"] = round(float(np.mean(acc)), 3)
+            n_splits = 5 if len(y) >= 200 else (3 if len(y) >= 90 else 2)
+            splits, cv_scheme = build_purged_cv_splits(
+                y, timestamps=timestamps, n_splits=n_splits, purge_seconds=purge_seconds)
+            metrics["cv_scheme"] = cv_scheme
+            aucs, accs = [], []
+            for tr_idx, val_idx in splits:
+                m_fold = clone(model)
+                m_fold.fit(X[tr_idx], y[tr_idx])
+                p_val = m_fold.predict_proba(X[val_idx])[:, 1]
+                oof_prob[val_idx] = p_val
+                aucs.append(roc_auc_score(y[val_idx], p_val))
+                accs.append(accuracy_score(y[val_idx], (p_val >= 0.5).astype(int)))
+            if aucs:
+                metrics["cv_auc"] = round(float(np.mean(aucs)), 3)
+                metrics["cv_accuracy"] = round(float(np.mean(accs)), 3)
         except Exception:
             pass
 
         self.model = model
-        # probability calibration: fit an isotonic calibrator on OUT-OF-FOLD
-        # predictions (so the calibrator isn't learned on the same data the
-        # model saw) -> probabilities become honest.  Skip on tiny datasets.
+        # Smooth probability calibration on OUT-OF-FOLD predictions (Platt
+        # sigmoid in log-odds space by default — avoids isotonic step plateaus).
         self.calibrator = None
         try:
-            if len(y) >= 120:
-                from sklearn.model_selection import cross_val_predict
-                from sklearn.isotonic import IsotonicRegression
-                cv_prob = cross_val_predict(model, X, y, cv=5, method="predict_proba")[:, 1]
-                cal = IsotonicRegression(out_of_bounds="clip")
-                cal.fit(cv_prob, y)
+            valid_oof = ~np.isnan(oof_prob)
+            if int(valid_oof.sum()) >= 120:
+                p_oof = oof_prob[valid_oof]
+                y_oof = y[valid_oof]
+                if str(calibration_method).lower() == "isotonic":
+                    from sklearn.isotonic import IsotonicRegression
+                    cal = IsotonicRegression(out_of_bounds="clip")
+                    cal.fit(p_oof, y_oof)
+                    p_cal = cal.predict(p_oof)
+                    metrics["calibration"] = "isotonic"
+                else:
+                    from sklearn.linear_model import LogisticRegression
+                    cal = LogisticRegression(C=1.0)
+                    cal.fit(_logit(p_oof).reshape(-1, 1), y_oof)
+                    p_cal = cal.predict_proba(_logit(p_oof).reshape(-1, 1))[:, 1]
+                    metrics["calibration"] = "sigmoid"
                 self.calibrator = cal
-                metrics["calibration"] = "isotonic"
+                metrics["cv_brier"] = round(float(brier_score_loss(y_oof, p_cal)), 4)
         except Exception:
             self.calibrator = None
         self.metrics = metrics

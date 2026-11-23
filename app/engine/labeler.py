@@ -11,7 +11,9 @@ filled within `entry_valid_bars` of the zone forming is NOT a training sample
 """
 
 
-def label_setup(df, setup: dict, horizon: int, entry_valid_bars: int = 24):
+def label_setup_with_index(df, setup: dict, horizon: int, entry_valid_bars: int = 24):
+    """Like label_setup(), returning `(label, resolved_index)` so callers can
+    enforce strict causality (never using outcomes before `resolved_index`)."""
     i = setup["formed_index"]
     direction = setup["direction"]
     entry, sl, tp = setup["entry"], setup["stop_loss"], setup["take_profit"]
@@ -20,10 +22,10 @@ def label_setup(df, setup: dict, horizon: int, entry_valid_bars: int = 24):
     valid = int(setup.get("entry_valid_bars") or entry_valid_bars)
 
     filled = False
-    limit_start = i + 1
-    limit_end = min(i + 1 + valid, len(df)) if valid > 0 else min(i + 1 + horizon, len(df))
+    end = min(i + 1 + horizon, len(df))
+    limit_end = min(i + 1 + valid, len(df)) if valid > 0 else end
     # fill window: if not filled within entry_valid_bars -> not a sample
-    for k in range(i + 1, min(i + 1 + horizon, len(df))):
+    for k in range(i + 1, end):
         hi = df["high"].iat[k]
         lo = df["low"].iat[k]
         if not filled:
@@ -31,25 +33,30 @@ def label_setup(df, setup: dict, horizon: int, entry_valid_bars: int = 24):
                 if lo <= entry + tol:
                     filled = True
                 elif k >= limit_end:
-                    return None            # never filled within validity window
+                    return None, None      # never filled within validity window
                 else:
                     continue
             else:
                 if hi >= entry - tol:
                     filled = True
                 elif k >= limit_end:
-                    return None
+                    return None, None
                 else:
                     continue
         # in trade from this bar on (conservative: check SL first on same bar)
         if direction == "long":
             if lo <= sl:
-                return 0
+                return 0, k
             if hi >= tp:
-                return 1
+                return 1, k
         else:
             if hi >= sl:
-                return 0
+                return 0, k
             if lo <= tp:
-                return 1
-    return 0 if filled else None  # never filled -> not a sample
+                return 1, k
+    return (0, end - 1) if filled else (None, None)  # never filled -> not a sample
+
+
+def label_setup(df, setup: dict, horizon: int, entry_valid_bars: int = 24):
+    y, _ = label_setup_with_index(df, setup, horizon, entry_valid_bars=entry_valid_bars)
+    return y

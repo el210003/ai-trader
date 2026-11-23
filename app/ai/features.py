@@ -31,10 +31,9 @@ FEATURES = [
     "htf_tp_distance_atr",     # entry -> nearest HTF liquidity pool (ATR units, cap 20)
 
     # ----- rejection-bar family (RejectionProto port; neutral for zone setups) -----
+    "is_rejection",            # 1 = rejection-bar setup family, 0 = OB/FVG zone setup
     "rej_exp",                 # expansion: body vs 20-bar avg body (x); 0 = not a rejection
     "rej_clv",                 # close location value % (50 = neutral)
-    "rej_is_momentum",         # 1 = momentum reject (exp >= 3x)
-    "rej_is_agrade",           # 1 = A-grade reject (exp < 2x + weak close)
 ]
 
 
@@ -134,10 +133,9 @@ def make_features(df, setup: dict, smc: dict, cfg: dict,
         "htf_trend_align": float(trend_align) if trend_align is not None else 0.5,
         "htf_pd_alignment": float(pd_align) if pd_align is not None else 0.5,
         "htf_tp_distance_atr": float(min(cap, max(0.0, tp_dist_atr))),
+        "is_rejection": 1.0 if (setup.get("setup_kind") == "rejection" or bool(rej)) else 0.0,
         "rej_exp": rej_exp,
         "rej_clv": rej_clv,
-        "rej_is_momentum": 1.0 if (rej and rej_bucket == 1) else 0.0,
-        "rej_is_agrade": 1.0 if (rej and rej_bucket == 0) else 0.0,
     }
 
 
@@ -156,6 +154,8 @@ def feature_vector(feats: dict):
                 out.append(0.5)
             elif f == "htf_tp_distance_atr":
                 out.append(20.0)
+            elif f == "rej_clv":
+                out.append(50.0)
             else:
                 out.append(0.0)
         else:

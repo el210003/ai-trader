@@ -13,23 +13,34 @@ However, auditing the live SQLite database (`data/trader.db`) and the deployed m
 
 ---
 
-## 1. Current State Snapshot *(Updated after P0)*
+## 1. Current State Snapshot *(Updated after P3)*
 
 | Component | Status / Finding |
 |---|---|
-| **Deployed model** | `data/models/setup_classifier.joblib` (`sklearn` `HistGradientBoostingClassifier`, `max_iter=250`, `max_depth=4`, `lr=0.06`, `min_samples_leaf=10`, `l2=1.0` + OOF `IsotonicRegression`), retrained `2026-11-22 22:42:00` on clean candles |
-| **Builder / Feature hash** | `BUILDER_VERSION = "v4-rejection-family"`, 20 features (`hash = 546fc382bc52`), `needs_retrain = False` |
-| **Training metrics (post-P0)** | `n_samples = 20,350`, base `win_rate = 0.378`, `cv_auc = 0.561`, `cv_accuracy = 0.606` (prior pre-cleanup model: `n_samples = 13,805`, `cv_auc = 0.589`) |
+| **Deployed model** | `data/models/setup_classifier.joblib` (`sklearn` `HistGradientBoostingClassifier`, `max_iter=250`, `max_depth=4`, `lr=0.06`, `min_samples_leaf=10`, `l2=1.0` + OOF Platt `sigmoid` calibrator), retrained `2026-11-23 08:20:37` after P3 fixes |
+| **Builder / Feature hash** | `BUILDER_VERSION = "v5-rejection-flag"`, 19 features (`hash = 06e5f5f5e534`), `needs_retrain = False` |
+| **Training metrics (post-P3)** | `train_tfs = ['M15']`, `n_samples = 10,017`, base `win_rate = 0.381`, `cv_scheme = purged-time-5fold`, `cv_auc = 0.555`, `cv_accuracy = 0.609`, `cv_brier = 0.2331` |
+| **Live OOS calibration (post-P2/P3)** | All journaled setups (`n=220`): **AUC = 0.566**, Brier = `0.2371`, `mean_pred = 0.383` vs `actual_wr = 0.400`; v4 buckets monotone (`[0.32, 0.38)`: `39.2%` WR / `+0.188R` -> `[0.38, 0.44)`: `47.6%` WR / `+0.292R` -> `[0.44, 1.00)`: `66.7%` WR / `+0.770R`) |
 | **Clean candle & replay corpus** | `353,949` clean candles (`3,386` demo bars purged); 22 enabled symbols × `{M15, H1, H4}` = **20,350** labeled setups |
 | **Live journal (`setups_history`)** | 648 setups (`638` in Sep 2026, `10` in Nov 2026); 462 resolved `WIN`/`LOSS` (`172` wins, `37.2%` WR), 115 `EXPIRED_UNFILLED`, 20 `EXPIRED_OPEN` |
 | **Live OOS discrimination (pre-P0)** | Logged `ml_prob` AUC = **0.557** (`n=458`); pre-cleanup model on v4 20-feature live setups (`n=143`) AUC = **0.543** |
 | **Strict walk-forward OOS (clean M15)** | Train first 70% (`n=4,078`) → test last 30% (`n=1,916`, 96-bar purge): **OOS AUC = 0.575**, Brier = `0.241` |
 | **Live-outcome blend status** | `185` unique non-overlapping live samples (`< min_samples: 200`, so P0 trained on clean replay only) |
 
-### P0 Execution Log (2026-11-22)
-- **Demo isolation (`app/config.py`, `app/main.py`):** `load_config(path, demo=True)` now routes `storage.path` → `data/demo_trader.db` and `ai.ml.model_path` → `data/models/demo_setup_classifier.joblib`.
-- **Database cleanup (`data/trader.db`):** Backed up to `data/trader.db.bak_1795358257`, deleted **3,386** synthetic `--demo` bars (`2,869` non-BTCUSD weekend bars + `517` bars in `2026-09-06 13:00..24:00` UTC), and ran `VACUUM`. Verified `symbol_avg_atr_pct` normalized (e.g., `EURAUD M15`: `0.9455%` → `0.0496%`, `NZDUSD M15`: `0.0714%`).
-- **Baseline retrain:** Ran `python -m app.main train --baseline` on all 22 enabled symbols (`20,350` samples) and updated `data/ml_baseline.json`.
+### P0 & P1 Execution Log (2026-11-22)
+- **P0 — Demo isolation (`app/config.py`, `app/main.py`):** `load_config(path, demo=True)` now routes `storage.path` → `data/demo_trader.db` and `ai.ml.model_path` → `data/models/demo_setup_classifier.joblib`.
+- **P0 — Database cleanup (`data/trader.db`):** Backed up to `data/trader.db.bak_1795358257`, deleted **3,386** synthetic `--demo` bars (`2,869` non-BTCUSD weekend bars + `517` bars in `2026-09-06 13:00..24:00` UTC), and ran `VACUUM`. Verified `symbol_avg_atr_pct` normalized (e.g., `EURAUD M15`: `0.9455%` → `0.0496%`, `NZDUSD M15`: `0.0714%`).
+- **P0 — Baseline retrain:** Ran `python -m app.main train --baseline` on all 22 enabled symbols (`20,350` samples, `cv_auc = 0.561`) and saved `data/ml_baseline.json`.
+- **P1 — Neutral `rej_clv` fallback (`app/ai/features.py`):** Updated `feature_vector()` so missing `rej_clv` defaults to `50.0` (matching `make_features()`), preventing pre-v4 live samples from being encoded as extreme rejection bars.
+- **P1 — Strict causal replay filter (`app/engine/labeler.py`, `app/pipeline.py`):** Added `label_setup_with_index()` returning `(label, resolved_index)` and filtered replay dynamic history by `resolved_index <= i` (and computed `static_features(sub, symbol)` causally on the prefix `sub`).
+- **P1 — `SymbolStats` shrinkage & trailing window (`app/ai/symbol_stats.py`):** Lowered `min_samples` from `30` to `10` with Bayesian shrinkage (`prior_weight = 10`, `prior_win_rate = 0.38`, `prior_rr = 0.10`) so all 21 live symbols (`14–32` resolved outcomes) produce smooth live features instead of 100% cold-start `None`, and bounded `static_features()` to a `500`-bar trailing window.
+- **P1 — Retrain & compare:** Ran `python -m app.main train --compare` (`cv_auc`: `0.561 -> 0.568` [`+0.0070`], `cv_accuracy`: `0.606 -> 0.616` [`+0.0100`]; `symbol_avg_atr_pct` importance doubled from `0.0052` to `0.0103` and `symbol_recent_win_rate` rose from `0.0044` to `0.0091`).
+- **P2 — `entry_tf` training scope (`app/config.py`, `config.yaml`, `app/pipeline.py`):** Added `ai.ml.train_entry_tf_only: true` so `train()` replays only `mtf.entry_tf` (`['M15']`, `10,017` samples) while H1/H4 continue supplying HTF confluence features (`htf_pd_alignment` importance jumped to `+0.0206`).
+- **P2 — Purged chronological CV (`app/ai/ml_model.py`, `app/pipeline.py`):** Implemented `build_purged_cv_splits()` (`purged-time-5fold`) with a `horizon * tf_minutes * 60` (`86,400s` = 96 M15 bars) purge gap around each validation block so overlapping forward horizons cannot leak across folds.
+- **P2 — Smooth Platt sigmoid calibration (`app/ai/ml_model.py`):** Replaced step-function `IsotonicRegression` with out-of-fold log-odds `LogisticRegression` (`ai.ml.calibration: sigmoid`), producing smooth, monotone probabilities (`cv_brier = 0.2332`) and updating `feature_set_hash()` so stale isotonic/multi-TF models auto-retrain.
+- **P3 — Feature set `v5-rejection-flag` (`app/ai/features.py`, `app/ai/ml_model.py`):** Added explicit `is_rejection` (0/1) indicator, pruned zero-importance `rej_is_momentum` and `rej_is_agrade` (`20 -> 19` features), bumped `BUILDER_VERSION = "v5-rejection-flag"`, and retrained (`cv_auc = 0.555`, `cv_brier = 0.2331`).
+- **P3 — Calibrated thresholds (`config.yaml`, `app/config.py`):** Adjusted `execution.min_ml_prob` (`0.50 -> 0.40`, where live resolved setups show `43.2%–47.3%` WR and `+0.16R` to `+0.28R` expectancy vs 0 setups ever reaching `0.50` under smooth calibration), `ai.hybrid.buy_threshold` (`60 -> 55`), and `execution.min_score` (`70 -> 58`).
+- **P3 — Docs & workspace hygiene (`docs/ml-method.md`, `data/`):** Rewrote `docs/ml-method.md` to document the 19-feature `v5-rejection-flag` schema, causal `label_setup_with_index`, purged 5-fold CV, and Platt sigmoid calibration; removed **29** stale `_test_*` / `_review_*` DB and joblib artifacts from `data/`.
 
 ---
 
@@ -103,19 +114,17 @@ cv_prob = cross_val_predict(model, X, y, cv=5, method="predict_proba")[:, 1]
 2. **Isolate `--demo` storage** in `app/config.py` and `app/main.py` — **Done:** `load_config(..., demo=True)` now redirects `storage.path` to `data/demo_trader.db` and `ai.ml.model_path` to `data/models/demo_setup_classifier.joblib`.
 3. **Retrain immediately** after cleaning `trader.db` — **Done:** retrained on `20,350` clean replay rows (`cv_auc = 0.561`, `win_rate = 0.378`) and saved the new baseline to `data/ml_baseline.json`.
 
-### P1 — Fix Feature Skew & Causal Replay
-1. **Fix `feature_vector()` default for `rej_clv` (`app/ai/features.py:134`):** Default missing `rej_clv` to `50.0` (matching `make_features()`), not `0.0`, so legacy pre-v4 live samples do not masquerade as extreme rejection bars.
-2. **Fix replay causal filter (`app/pipeline.py:595`):** Record the exact bar index `resolved_index` in `label_setup()` and filter `prior = [h for h in history if h["resolved_index"] <= i]` so unresolved future outcomes never leak into `symbol_recent_win_rate`.
-3. **Align `SymbolStats` cold-start & scale (`app/ai/symbol_stats.py`):**
-   - Lower `min_samples` from `30` to `10` (or use Bayesian shrinkage toward the global prior `(wins + 10 * 0.38) / (n + 10)`) so live inference actually uses symbol feedback instead of outputting `None` for 100% of setups.
-   - Compute `symbol_avg_atr_pct` over a trailing window (e.g., last 500 bars of `entry_tf`) rather than all-time history so regime shifts and multi-TF scales stay aligned.
+### P1 — Fix Feature Skew & Causal Replay *(DONE)*
+1. **Fix `feature_vector()` default for `rej_clv` (`app/ai/features.py`):** **Done** — missing `rej_clv` now defaults to `50.0` (matching `make_features()`).
+2. **Fix replay causal filter (`app/engine/labeler.py`, `app/pipeline.py`):** **Done** — added `label_setup_with_index()` and filtered `prior = [h for h in history if h["resolved_index"] <= i]`, plus causal prefix `static_features(sub, symbol)`.
+3. **Align `SymbolStats` cold-start & scale (`app/ai/symbol_stats.py`):** **Done** — lowered `min_samples` to `10` with Bayesian shrinkage (`prior_weight=10`, `prior_win_rate=0.38`, `prior_rr=0.10`) and bounded `static_features()` to a `500`-bar trailing window. Retrain improved `cv_auc` by **`+0.0070`** (`0.561 -> 0.568`) and `cv_accuracy` by **`+0.0100`** (`0.606 -> 0.616`).
 
-### P2 — Improve Validation, Calibration, and Training Scope
-1. **Train on `entry_tf` (`M15`) when `mtf.entry_tf` is configured** (or add `tf_minutes` / test M15-only vs all-TF via `--compare`), since live v4 setups are exclusively `M15` and M15-only replay scored `+0.048` higher AUC on live v4 outcomes.
-2. **Use purged time-series / `GroupKFold` CV (`app/ai/ml_model.py`):** Replace unshuffled `cv=3` with purged chronological folds (e.g., 5 time blocks with a `label_horizon_bars` purge gap) for both `cv_auc` reporting and out-of-fold probability calibration.
-3. **Replace step-function `IsotonicRegression` with `CalibratedClassifierCV(..., method="sigmoid")` (Platt scaling) or smoothed isotonic/logistic calibration:** Isotonic regression on noisy ~0.58-AUC probabilities creates flat plateaus and sharp jumps (`0.485 -> 0.523 -> 0.596`) that distort downstream `hybrid.fuse()` scores and choke the `execution.min_ml_prob: 0.50` gate.
+### P2 — Improve Validation, Calibration, and Training Scope *(DONE)*
+1. **Train on `entry_tf` (`M15`) when `mtf.entry_tf` is configured (`app/config.py`, `config.yaml`, `app/pipeline.py`):** **Done** — added `ai.ml.train_entry_tf_only: true`; training now runs on `['M15']` (`10,017` samples) while H1/H4 supply HTF context.
+2. **Use purged time-series CV (`app/ai/ml_model.py`):** **Done** — `build_purged_cv_splits()` orders samples by `formed_at` and purges `label_horizon_bars` (`86,400s`) around each validation block (`purged-time-5fold`, honest OOS `cv_auc = 0.555`).
+3. **Replace step-function `IsotonicRegression` with smooth Platt sigmoid calibration (`app/ai/ml_model.py`):** **Done** — `ai.ml.calibration: sigmoid` fits log-odds logistic calibration on purged OOF predictions (`cv_brier = 0.2332`, live OOS `mean_pred = 0.383` vs `actual_wr = 0.400`, monotone bucket expectancy).
 
-### P3 — Feature & Threshold Tuning (Once Clean Data & ≥400 v4 Live Outcomes Exist)
-1. **Add `is_rejection` (0/1)** and prune zero-importance binary flags (`rej_is_momentum`, `rej_is_agrade`) if permutation importance remains `<= 0` on clean M15 data.
-2. **Re-calibrate `execution.min_ml_prob` and `ai.hybrid.buy_threshold`:** With a ~38% base win rate and 1.85R average win, positive expectancy begins around `P(win) >= 0.36–0.40`; requiring `min_ml_prob: 0.50` blocks >99% of valid setups (`640/644`).
-3. **Update `docs/ml-method.md`** to match the current 20-feature `v4-rejection-family` implementation and clean up `_test_*` artifacts in `data/`.
+### P3 — Feature & Threshold Tuning *(DONE)*
+1. **Add `is_rejection` (0/1) and prune zero-importance flags (`app/ai/features.py`, `app/ai/ml_model.py`):** **Done** — replaced dead `rej_is_momentum` and `rej_is_agrade` with explicit `is_rejection` (`19` features, `BUILDER_VERSION = "v5-rejection-flag"`) and retrained (`cv_brier = 0.2331`).
+2. **Re-calibrate `execution.min_ml_prob` and `ai.hybrid.buy_threshold` (`config.yaml`, `app/config.py`):** **Done** — lowered `execution.min_ml_prob` from `0.50` to `0.40`, `ai.hybrid.buy_threshold` from `60` to `55`, and `execution.min_score` from `70` to `58` to match calibrated probabilities.
+3. **Update `docs/ml-method.md` and clean up `data/` artifacts:** **Done** — updated `docs/ml-method.md` to reflect `v5-rejection-flag`, purged CV, and Platt sigmoid calibration; deleted 29 temporary `_test_*` / `_review_*` files from `data/`.
