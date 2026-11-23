@@ -78,6 +78,7 @@ Returns the configuration the UI needs:
   "symbols": ["EURUSD", "GBPUSD", "USDJPY"],
   "timeframes": ["M15", "H1"],
   "refresh_seconds": 60,
+  "show_mitigated_zones": false,
   "model_loaded": true,
   "model_age_days": 2.3,
   "model_stale": false,

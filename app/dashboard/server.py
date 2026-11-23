@@ -318,6 +318,7 @@ def create_app(cfg: dict) -> FastAPI:
             "refresh_seconds": int(cfg["dashboard"]["refresh_seconds"]),
             "auto_run_seconds": auto_run if not bar_close else 0,
             "bar_close_watcher": bar_close,
+            "show_mitigated_zones": bool(cfg.get("dashboard", {}).get("show_mitigated_zones", False)),
             "sessions": cfg.get("dashboard", {}).get("sessions", {}),
             "model_loaded": ml.loaded,
             "model_age_days": round(age, 2) if age is not None else None,

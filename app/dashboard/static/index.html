@@ -435,6 +435,7 @@ footer{padding:6px 16px;font-size:11px;color:var(--muted);border-top:1px solid v
     <div id="legend">
       <label><input type="checkbox" id="tgOB" checked> <span class="sw" style="background:var(--ob-long);border:1px solid var(--green)"></span>Order Blocks</label>
       <label><input type="checkbox" id="tgFVG" checked> <span class="sw" style="background:var(--fvg-long);border:1px solid var(--blue)"></span>FVGs</label>
+      <label title="Show mitigated Order Blocks and filled FVGs"><input type="checkbox" id="tgMitigated"> Mitigated / Filled</label>
       <label><input type="checkbox" id="tgPD" checked> <span class="sw" style="background:rgba(242,95,92,.2)"></span>Premium/Discount</label>
       <label><input type="checkbox" id="tgSweeps" checked> Sweeps</label>
       <label><input type="checkbox" id="tgStructure" checked> BOS/CHoCH</label>
@@ -697,11 +698,11 @@ function renderBoxes(){
     boxes.push({t1:dr.low_time,  t2:null, top:dr.equilibrium, bottom:dr.bottom,
                 style:{bg:'rgba(45,212,167,.10)', border:'1px dashed rgba(45,212,167,.6)', label:'DISCOUNT'}});
   }
+  const showDead = $('tgMitigated') ? $('tgMitigated').checked : false;
   if ($('tgOB').checked && a.smc.order_blocks){
     for (const ob of a.smc.order_blocks.all){
-      // mitigated OBs draw faded (dashed) instead of hidden — like TradingView
-      // SMC indicators — so consumed zones stay visible for context
       const dead = !!ob.mitigated;
+      if (dead && !showDead) continue;
       const s = ob.direction === 'bullish'
         ? {bg: dead ? 'rgba(45,212,167,.05)' : 'var(--ob-long)',
            border: dead ? '1px dashed rgba(45,212,167,.25)' : '1px solid rgba(45,212,167,.45)'}
@@ -714,6 +715,7 @@ function renderBoxes(){
   if ($('tgFVG').checked && a.smc.fvgs){
     for (const f of a.smc.fvgs.all){
       const dead = !!f.filled;
+      if (dead && !showDead) continue;
       const s = dead
         ? {bg:'rgba(120,130,150,.04)', border:'1px dashed rgba(120,130,150,.22)', label:'FVG·filled'}
         : (f.direction === 'bullish'
@@ -1104,6 +1106,7 @@ function applySymbolFilter(){
 /* --------------------------------------------------------------- data */
 async function loadMeta(){
   const r = await fetch('/api/meta'); state.meta = await r.json();
+  if ($('tgMitigated')) $('tgMitigated').checked = !!state.meta.show_mitigated_zones;
   try{ const sr = await fetch('/api/status'); updateStamp(await sr.json()); }catch(e){}
   state.allSymbols = state.meta.symbols || [];
   applySymbolFilter();
@@ -1640,7 +1643,7 @@ $('retrainBtn').onclick = async () => {
     else setStatus('err', j.message);
   } finally { setTimeout(()=>{$('retrainBtn').disabled=false;}, 800); }
 };
-for (const id of ['tgOB','tgFVG','tgPD','tgSweeps','tgStructure','tgSwings','tgRej','tgSessions'])
+for (const id of ['tgOB','tgFVG','tgMitigated','tgPD','tgSweeps','tgStructure','tgSwings','tgRej','tgSessions'])
   $(id).onchange = () => { if (state.data) renderChart(); };
 
 $('symbolSearch').addEventListener('input', (e) => {

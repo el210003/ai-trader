@@ -237,6 +237,7 @@ dashboard:
   # CLI shortcut:  serve.bat --on-bar-close
   bar_close_watcher: true
   bar_poll_seconds: 10       # how often to peek MT5 for a new bar
+  show_mitigated_zones: false # show filled FVGs and mitigated OBs on the chart (hidden by default)
   # Chart session overlay (dashboard only, no engine effect).
   # Sessions are defined in UTC hours (fractional ok). The chart converts
   # them to SERVER time using utc_offset: null = auto-detect from the

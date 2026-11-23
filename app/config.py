@@ -126,7 +126,8 @@ DEFAULTS = {
                   "auto_run_interval": 0, "bar_close_watcher": False,
                   "bar_poll_seconds": 10, "debug": True,
                   "log_file": "logs/ai-trader.log",
-                  "parallel_analysis": True, "analysis_workers": 0},
+                  "parallel_analysis": True, "analysis_workers": 0,
+                  "show_mitigated_zones": False},
 }
 
 
