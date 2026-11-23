@@ -34,7 +34,7 @@ def create_app(cfg: dict) -> FastAPI:
     store = Store(cfg["storage"]["path"])
     ml = SetupML(cfg["ai"]["ml"]["model_path"])
     ml.load()
-    llm = LLMAnalyzer(cfg["ai"]["llm"])
+    llm = LLMAnalyzer(cfg["ai"]["llm"], store=store)
     symbol_stats = SymbolStats()   # shared cache for per-symbol features
 
     # Symbol list, possibly enriched from discovery cache
@@ -102,7 +102,23 @@ def create_app(cfg: dict) -> FastAPI:
     # bar-close watcher: cheap 2-bar peek per pair; analyze a pair the moment
     # its bar CLOSES, using only confirmed bars (matches training semantics)
     if bar_close:
-        watch = {"last_poll_done": time.time()}
+        # Pre-warm the ProcessPoolExecutor so Windows spawn + numpy/sklearn imports
+        # finish before the first bar-close boundary arrives.
+        def _warm_pool():
+            try:
+                p = pipeline._analysis_pool(cfg)
+                if p is not None:
+                    list(p.map(int, []))
+            except Exception:
+                pass
+        threading.Thread(target=_warm_pool, daemon=True, name="pool-warmup").start()
+
+        watch = {
+            "last_poll_done": time.time(),
+            "heartbeat": time.time(),
+            "phase": "idle",
+            "detail": "",
+        }
         def _bar_watcher():
             from ..data import mt5_client as _m5
             mt5 = None
@@ -111,16 +127,22 @@ def create_app(cfg: dict) -> FastAPI:
             fail_streak = 0         # consecutive polls with zero readable symbols
             pair_fail_at = {}       # (symbol, tf) -> last failure time (retry cooldown)
             last_hb = 0.0
+            delta_bars = max(10, int(cfg.get("dashboard", {}).get("bar_delta_bars", 50) or 50))
+            full_bars = int(cfg["data"]["bars"])
             while True:
                 try:
                     triggers = []
                     peeked = 0
+                    watch["phase"] = "peek"
+                    watch["heartbeat"] = time.time()
                     with _m5.MT5_LOCK:
                         if mt5 is None and not demo_mode:
                             mt5 = _m5.connect_mt5(cfg["mt5"])
                         for symbol in visible_symbols():
                             for tf in cfg["timeframes"]:
                                 key = (symbol, tf)
+                                watch["detail"] = f"{symbol} {tf}"
+                                watch["heartbeat"] = time.time()
                                 try:
                                     t = pipeline.peek_last_bar_time(symbol, tf, demo=demo_mode, mt5=mt5)
                                 except Exception as e:
@@ -159,12 +181,17 @@ def create_app(cfg: dict) -> FastAPI:
                         debug(f"processing {len(batch)} bar-close pair(s): "
                               + ", ".join(f"{s} {tf}" for s, tf in batch))
                         state["last_pull"] = {"at": int(t_b)}
-                        # phase 1: pull fresh candles (sequential MT5 IPC under lock)
+                        # phase 1: pull incremental candle delta (full pull only on cold start)
+                        watch["phase"] = "pull"
                         pull_fail = set()
                         with _m5.MT5_LOCK:
                             for symbol, tf in batch:
+                                watch["detail"] = f"{symbol} {tf}"
+                                watch["heartbeat"] = time.time()
                                 try:
-                                    df = _m5.fetch_ohlcv(symbol, tf, int(cfg["data"]["bars"]),
+                                    have_n = store.candle_count(symbol, tf)
+                                    fetch_n = delta_bars if have_n >= int(full_bars * 0.9) else full_bars
+                                    df = _m5.fetch_ohlcv(symbol, tf, fetch_n,
                                                          demo=demo_mode, cfg_mt5=cfg["mt5"], mt5=mt5)
                                     store.upsert_candles(df, symbol, tf)
                                 except Exception as e:
@@ -182,15 +209,31 @@ def create_app(cfg: dict) -> FastAPI:
                             except Exception as e:
                                 debug(f"ensure_model_current failed: {e}")
                         # phase 2: analyses in the process pool (true CPU parallelism;
-                        # MT5_LOCK released while workers run off stored candles)
+                        # workers return serialized analyses and parent writes sequentially
+                        # so SQLite never hits cross-process write lock contention)
+                        watch["phase"] = "analyze"
+                        watch["detail"] = f"{len(to_analyze)} pairs"
+                        watch["heartbeat"] = time.time()
                         results = []
                         pool = pipeline._analysis_pool(cfg)
                         if pool is not None and len(to_analyze) > 1:
-                            payloads = [(s, tf, cfg["storage"]["path"], cfg, True)
+                            payloads = [(s, tf, cfg["storage"]["path"], cfg, True, False)
                                         for s, tf in to_analyze]
                             results = list(pool.map(pipeline._analyze_pair_worker, payloads))
+                            watch["heartbeat"] = time.time()
+                            now_save = int(time.time())
+                            for r in results:
+                                if r.get("ok") and r.get("analysis") is not None:
+                                    a = r["analysis"]
+                                    store.save_analysis(r["symbol"], r["tf"], a)
+                                    try:
+                                        store.append_setups(r["symbol"], r["tf"], a.get("setups", []), now_save)
+                                    except Exception:
+                                        pass
                         else:
                             for s, tf in to_analyze:
+                                watch["detail"] = f"{s} {tf}"
+                                watch["heartbeat"] = time.time()
                                 try:
                                     if symbol_stats:
                                         symbol_stats.invalidate(s)
@@ -216,17 +259,24 @@ def create_app(cfg: dict) -> FastAPI:
                               f"in {time.time() - t_b:.1f}s")
                     # refresh the CSM snapshot when bars closed (throttled internally)
                     if batch:
+                        watch["phase"] = "csm"
+                        watch["detail"] = ""
+                        watch["heartbeat"] = time.time()
                         try:
                             with _m5.MT5_LOCK:
                                 pipeline.update_csm(cfg, store, mt5=mt5, demo=demo_mode)
                         except Exception as e:
                             state["last_error"] = f"csm update: {e}"
                         # resolve outcomes of previously journaled setups
+                        watch["phase"] = "outcomes"
+                        watch["heartbeat"] = time.time()
                         try:
                             pipeline.resolve_pending(store, cfg)
                         except Exception as e:
                             state["last_error"] = f"outcome resolve: {e}"
                         # notify Telegram on confirmed structure breaks (CHoCH / BOS)
+                        watch["phase"] = "telegram"
+                        watch["heartbeat"] = time.time()
                         try:
                             ok_pairs = [(r["symbol"], r["tf"]) for r in results if r.get("ok")]
                             if ok_pairs:
@@ -255,23 +305,27 @@ def create_app(cfg: dict) -> FastAPI:
                         fail_streak = 0
                 else:
                     fail_streak = 0
-                if time.time() - watch["last_poll_done"] > 60:
-                    debug(f"previous watcher poll took "
-                          f"{time.time() - watch['last_poll_done']:.0f}s (MT5 blocking?)")
+                watch["phase"] = "idle"
+                watch["detail"] = ""
+                watch["heartbeat"] = time.time()
                 watch["last_poll_done"] = time.time()
                 if time.time() - last_hb > 120:
                     debug(f"watcher alive: peeked {peeked} pairs")
                     last_hb = time.time()
                 time.sleep(bar_poll)
         def _watchdog():
-            """The MT5 python API blocks without timeout — if the poll loop hangs,
-            this makes it visible instead of silent."""
+            """The MT5 python API blocks without timeout — if a phase hangs,
+            report the exact phase and target instead of false-alarming on large batches."""
             while True:
-                time.sleep(60)
-                gap = time.time() - watch["last_poll_done"]
-                if gap > 120:
-                    debug(f"WARNING: bar watcher has not completed a poll for {gap:.0f}s "
-                          f"-- an MT5 call is likely blocking; restart serve.bat to recover")
+                time.sleep(30)
+                phase = watch.get("phase", "idle")
+                if phase == "idle":
+                    continue
+                gap = time.time() - watch.get("heartbeat", watch["last_poll_done"])
+                if gap > 60:
+                    detail = f" ({watch['detail']})" if watch.get("detail") else ""
+                    debug(f"WARNING: bar watcher stuck in phase={phase}{detail} for {gap:.0f}s "
+                          f"-- an MT5/network call may be blocking; restart serve.bat if it does not recover")
         threading.Thread(target=_bar_watcher, daemon=True).start()
         threading.Thread(target=_watchdog, daemon=True).start()
 

@@ -52,7 +52,8 @@ def build_llm_context(setup: dict, smc: dict, htf_ctx: dict = None) -> dict:
 
 def analyze_symbol(store: Store, symbol: str, tf: str, cfg: dict,
                    ml: SetupML, llm: LLMAnalyzer,
-                   symbol_stats: SymbolStats = None, drop_last_bar: bool = False):
+                   symbol_stats: SymbolStats = None, drop_last_bar: bool = False,
+                   save: bool = True):
     """Full analysis for one symbol/timeframe. Returns analysis dict or None.
 
     drop_last_bar=True analyzes only CLOSED bars (the newest candle MT5 returns
@@ -110,8 +111,10 @@ def analyze_symbol(store: Store, symbol: str, tf: str, cfg: dict,
             "setups": [],
             "context_only": True,
         }
-        store.save_analysis(symbol, tf, jsonable(analysis))
-        return analysis
+        payload = jsonable(analysis)
+        if save:
+            store.save_analysis(symbol, tf, payload)
+        return payload
 
     setups = build_setups(symbol, tf, df, smc, cfg["smc"], htf_ctx=htf_ctx,
                           csm_dir=csm_dir, mtf_cfg=mtf_cfg)
@@ -191,13 +194,15 @@ def analyze_symbol(store: Store, symbol: str, tf: str, cfg: dict,
                 for htf, c in htf_ctx.items()},
         "setups": chosen,
     }
-    store.save_analysis(symbol, tf, jsonable(analysis))
-    # journal for forward validation (dedup on symbol+tf+formed_at+direction)
-    try:
-        store.append_setups(symbol, tf, chosen, int(time.time()))
-    except Exception:
-        pass
-    return analysis
+    payload = jsonable(analysis)
+    if save:
+        store.save_analysis(symbol, tf, payload)
+        # journal for forward validation (dedup on symbol+tf+formed_at+direction)
+        try:
+            store.append_setups(symbol, tf, chosen, int(time.time()))
+        except Exception:
+            pass
+    return payload
 
 
 # --------------------------------------------------------- baseline tracking
@@ -283,20 +288,27 @@ def _analyze_pair_worker(payload):
     """ProcessPoolExecutor entry: full analysis for ONE pair in a child
     process (true CPU parallelism — the GIL no longer serializes pandas).
     Loads the model fresh per task so retrains are picked up immediately.
-    analyze_symbol saves the analysis + journal rows itself (idempotent)."""
-    symbol, tf, storage_path, cfg, drop_last_bar = payload
+    When save=False (default for parallel batches), returns the serialized
+    analysis dict so the parent process persists sequentially with zero
+    cross-process SQLite write contention."""
+    if len(payload) == 6:
+        symbol, tf, storage_path, cfg, drop_last_bar, save = payload
+    else:
+        symbol, tf, storage_path, cfg, drop_last_bar = payload
+        save = True
     out = {"symbol": symbol, "tf": tf, "ok": False, "setups": 0,
-           "verdicts": [], "error": None, "seconds": 0.0}
+           "verdicts": [], "analysis": None, "error": None, "seconds": 0.0}
     t0 = time.time()
     try:
         store = Store(storage_path)
         try:
             ml = SetupML(cfg["ai"]["ml"]["model_path"])
             ml.load()
-            llm = LLMAnalyzer(cfg.get("ai", {}).get("llm", {}))
+            llm = LLMAnalyzer(cfg.get("ai", {}).get("llm", {}), store=store)
             a = analyze_symbol(store, symbol, tf, cfg, ml, llm, SymbolStats(),
-                               drop_last_bar=drop_last_bar)
+                               drop_last_bar=drop_last_bar, save=save)
             out["ok"] = True
+            out["analysis"] = a if not save else None
             out["setups"] = len(a["setups"]) if a else 0
             out["verdicts"] = [(s["direction"], s["verdict"], s.get("final_score"))
                                 for s in (a["setups"] if a else [])]
@@ -333,7 +345,7 @@ def run_all(cfg: dict, store: Store = None, demo: bool = False,
     ml.load()
     ensure_model_current(cfg, ml, store=store, demo=demo, symbols=symbols,
                          verbose=verbose)
-    llm = LLMAnalyzer(cfg["ai"]["llm"])
+    llm = LLMAnalyzer(cfg["ai"]["llm"], store=store)
     sym_list = symbols if symbols is not None else list(cfg["symbols"])
     pairs = [(s, tf) for s in sym_list for tf in cfg["timeframes"]]
     symbol_stats = SymbolStats()
@@ -368,8 +380,16 @@ def run_all(cfg: dict, store: Store = None, demo: bool = False,
     t_an = time.time()
     pool = _analysis_pool(cfg)
     if pool is not None and len(pairs) > 1:
-        payloads = [(s, tf, cfg["storage"]["path"], cfg, False) for s, tf in pairs]
+        payloads = [(s, tf, cfg["storage"]["path"], cfg, False, False) for s, tf in pairs]
+        now_save = int(time.time())
         for r in pool.map(_analyze_pair_worker, payloads):
+            if r["ok"] and r.get("analysis") is not None:
+                a = r["analysis"]
+                store.save_analysis(r["symbol"], r["tf"], a)
+                try:
+                    store.append_setups(r["symbol"], r["tf"], a.get("setups", []), now_save)
+                except Exception:
+                    pass
             count += 1 if r["ok"] and r["setups"] >= 0 else 0
             if verbose:
                 if r["error"]:

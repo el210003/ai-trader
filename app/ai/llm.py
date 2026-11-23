@@ -32,14 +32,15 @@ WAIT = setup lacks quality, AVOID = the trade goes against your read."""
 
 
 class LLMAnalyzer:
-    def __init__(self, cfg: dict):
+    def __init__(self, cfg: dict, store=None):
         self.cfg = cfg or {}
         self.enabled = bool(self.cfg.get("enabled", False))
         self.base_url = (self.cfg.get("base_url") or "").rstrip("/")
         self.model = self.cfg.get("model", "gpt-4o-mini")
-        self.timeout = int(self.cfg.get("timeout", 45))
+        self.timeout = int(self.cfg.get("timeout", 15))
         self._key_env = self.cfg.get("api_key_env", "OPENAI_API_KEY")
         self._cache = {}   # key -> (timestamp, response dict)
+        self._store = store
 
     @property
     def has_key(self) -> bool:
@@ -57,18 +58,29 @@ class LLMAnalyzer:
         """Returns normalized dict or None on any failure (never raises).
 
         Caching: identical setups (same symbol/tf/direction/zone/levels) within
-        ai.llm.cache_ttl seconds reuse the cached response — a setup that stays
-        valid across bar closes doesn't re-spend tokens every cycle."""
+        ai.llm.cache_ttl seconds reuse the cached response — backed by SQLite
+        when `store` is attached so worker processes share cached narratives."""
         if not self.usable:
             return None
         key = self._cache_key(context)
         ttl = max(0, int(self.cfg.get("cache_ttl", 900)))
-        if ttl and key in self._cache:
-            ts, resp = self._cache[key]
-            if time.time() - ts <= ttl:
-                out = dict(resp)
-                out["_cached"] = True
-                return out
+        if ttl:
+            if key in self._cache:
+                ts, resp = self._cache[key]
+                if time.time() - ts <= ttl:
+                    out = dict(resp)
+                    out["_cached"] = True
+                    return out
+            if self._store is not None:
+                try:
+                    db_resp = self._store.get_llm_cache(key, self.model, ttl)
+                    if db_resp:
+                        self._cache[key] = (time.time(), db_resp)
+                        out = dict(db_resp)
+                        out["_cached"] = True
+                        return out
+                except Exception:
+                    pass
         headers = {"Content-Type": "application/json"}
         api_key = os.getenv(self._key_env, "")
         if api_key:
@@ -94,6 +106,11 @@ class LLMAnalyzer:
                     oldest = sorted(self._cache.items(), key=lambda kv: kv[1][0])[:-128]
                     for k, _ in oldest:
                         self._cache.pop(k, None)
+                if ttl and self._store is not None:
+                    try:
+                        self._store.put_llm_cache(key, self.model, parsed)
+                    except Exception:
+                        pass
             return parsed
         except Exception:
             return None

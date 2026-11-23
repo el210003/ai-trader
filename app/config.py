@@ -67,8 +67,8 @@ DEFAULTS = {
             "api_key_env": "OPENAI_API_KEY",
             "model": "gpt-4o-mini",
             "temperature": 0.2,
-            "timeout": 45,
-            "min_ml_prob": 0.30,      # skip the LLM when ML win-prob is below this
+            "timeout": 15,
+            "min_ml_prob": 0.40,      # skip the LLM when ML win-prob is below this
             "cache_ttl": 900,         # identical setups reuse the LLM answer for N seconds
         },
         "hybrid": {
@@ -86,7 +86,7 @@ DEFAULTS = {
         "ma_type": "SMA",
         "display": "MA",
         "roc_len": 1,
-        "bars": 400,
+        "bars": 120,
         "min_pairs": 10,
         "min_interval_seconds": 30,
     },
@@ -138,7 +138,7 @@ DEFAULTS = {
     },
     "dashboard": {"host": "127.0.0.1", "port": 8000, "refresh_seconds": 60,
                   "auto_run_interval": 0, "bar_close_watcher": False,
-                  "bar_poll_seconds": 10, "debug": True,
+                  "bar_poll_seconds": 10, "bar_delta_bars": 50, "debug": True,
                   "log_file": "logs/ai-trader.log",
                   "parallel_analysis": True, "analysis_workers": 0,
                   "show_mitigated_zones": False},

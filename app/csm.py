@@ -99,33 +99,47 @@ def update_csm(cfg: dict, store, mt5=None, demo: bool = False,
     if prev and not force and time.time() - prev.get("generated_at", 0) < throttle:
         return prev
 
+    from .engine.mtf import TF_MINUTES
     lookback = int(csm_cfg.get("lookback", 20))
     ma_len = int(csm_cfg.get("ma_length", 10))
     ma_type = str(csm_cfg.get("ma_type", "SMA"))
     display = str(csm_cfg.get("display", "MA"))
     roc_len = max(1, int(csm_cfg.get("roc_len", 1)))
-    bars = int(csm_cfg.get("bars", 400))
+    bars = int(csm_cfg.get("bars", 120))
     min_pairs = int(csm_cfg.get("min_pairs", 10))
     tfs = cfg.get("timeframes", [])
+    now_ts = int(time.time())
 
     strength = {}       # tf -> {ccy: value}
     pair_states = {}    # pair -> {tf: "up"|"down"}
     pairs_used = 0
 
     for tf in tfs:
+        tf_sec = max(60, int(TF_MINUTES.get(tf.upper(), 15)) * 60)
         closes = {}
         for pair, base, quote in CSM_PAIRS:
             df = None
-            try:
-                df = mt5_client.fetch_ohlcv(pair, tf, bars, demo=demo,
-                                            cfg_mt5=cfg.get("mt5", {}), mt5=mt5)
-                store.upsert_candles(df, pair, tf)
-            except Exception:
-                df = None
-            if df is None or len(df) < lookback + 2:
-                df = store.load_candles(pair, tf)     # fall back to stored bars
+            have_n = store.candle_count(pair, tf)
+            latest_t = store.latest_candle_time(pair, tf) if have_n > 0 else None
+            # Skip MT5 fetch when SQLite already has >= `bars` candles and the latest
+            # bar was updated within the current timeframe window (e.g. by _bar_watcher).
+            is_fresh = (
+                have_n >= bars
+                and latest_t is not None
+                and (now_ts - latest_t) < tf_sec
+            )
+            if not is_fresh:
+                fetch_n = min(bars, 30) if have_n >= bars else bars
+                try:
+                    fetched = mt5_client.fetch_ohlcv(pair, tf, fetch_n, demo=demo,
+                                                     cfg_mt5=cfg.get("mt5", {}), mt5=mt5)
+                    store.upsert_candles(fetched, pair, tf)
+                except Exception:
+                    pass
+            df = store.load_candles(pair, tf)
             if df is None or len(df) < lookback + 2:
                 continue
+            df = df.tail(bars)
             closes[pair] = df.set_index("time")["close"]
 
         if len(closes) < min_pairs:

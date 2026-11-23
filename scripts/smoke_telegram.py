@@ -11,8 +11,8 @@ from app.config import load_config
 from app.data.store import Store
 from app.notifications import telegram as tg_mod
 
-# 1. Config defaults & env fallback
-cfg_default = load_config()
+# 1. Config defaults & env fallback (test against DEFAULTS via nonexistent config path)
+cfg_default = load_config("__nonexistent_config_for_defaults__.yaml")
 assert cfg_default["telegram"]["enabled"] is False, cfg_default["telegram"]
 assert cfg_default["telegram"]["events"] == ["choch", "bos"]
 

@@ -134,11 +134,11 @@ ai:
     api_key_env: MINIMAX_API_KEY
     model : MiniMax-M3
     temperature: 0.2
-    timeout: 45
+    timeout: 15
     # Speed controls for bar-close bursts (LLM calls only happen for setups
     # whose ML win-probability clears the gate; identical setups within the TTL
-    # reuse the cached narrative instead of re-spending tokens):
-    min_ml_prob: 0.30        # skip LLM when ML win-probability < 30%
+    # reuse the SQLite-backed cached narrative across workers & bar closes):
+    min_ml_prob: 0.40        # skip LLM when ML win-probability < 40%
     cache_ttl: 900           # reuse cached LLM narrative for 15 min
   hybrid:
     ml_weight: 0.75          # weight of ML win-probability in final score
@@ -158,7 +158,7 @@ csm:
   ma_type: SMA              # SMA | EMA
   display: MA               # MA (absolute strength) | ROC (momentum change)
   roc_len: 1                # ROC length when display is ROC
-  bars: 400                 # history pulled per CSM pair
+  bars: 120                 # history pulled per CSM pair (delta-updated when cached)
   min_pairs: 10             # skip computation if fewer pairs available
   min_interval_seconds: 30  # throttle between snapshot refreshes
 
@@ -226,9 +226,9 @@ execution:
 # Credentials can be placed here OR supplied via environment variables
 # (TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID) when the fields below are empty.
 telegram:
-  enabled: false               # master switch (or toggle live from the dashboard)
-  bot_token: ""                # e.g. "123456789:AAH..." (empty -> $TELEGRAM_BOT_TOKEN)
-  chat_id: ""                  # e.g. "-1001234567890" or "987654321" (empty -> $TELEGRAM_CHAT_ID)
+  enabled: true               # master switch (or toggle live from the dashboard)
+  bot_token: "9057130233:AAEqHk-VcHe3eqXj_lUFQ3_zPNKVlnQUbQk"                # e.g. "123456789:AAH..." (empty -> $TELEGRAM_BOT_TOKEN)
+  chat_id: "-5042733367"                  # e.g. "-1001234567890" or "987654321" (empty -> $TELEGRAM_CHAT_ID)
   bot_token_env: TELEGRAM_BOT_TOKEN
   chat_id_env: TELEGRAM_CHAT_ID
   events: [choch, bos]         # event types to alert on: choch, bos
@@ -266,6 +266,7 @@ dashboard:
   # CLI shortcut:  serve.bat --on-bar-close
   bar_close_watcher: true
   bar_poll_seconds: 10       # how often to peek MT5 for a new bar
+  bar_delta_bars: 50         # incremental bars pulled per bar close (full pull on cold start)
   show_mitigated_zones: false # show filled FVGs and mitigated OBs on the chart (hidden by default)
   # Chart session overlay (dashboard only, no engine effect).
   # Sessions are defined in UTC hours (fractional ok). The chart converts

@@ -122,6 +122,12 @@ class Store:
                 sent_at    INTEGER NOT NULL
             );
             CREATE INDEX IF NOT EXISTS idx_tg_alerts_pair ON telegram_alerts(symbol, tf);
+            CREATE TABLE IF NOT EXISTS llm_cache(
+                cache_key  TEXT PRIMARY KEY,
+                model      TEXT NOT NULL,
+                response   TEXT NOT NULL,
+                created_at INTEGER NOT NULL
+            );
             """
         )
         # execution log indexes
@@ -172,6 +178,13 @@ class Store:
         cur = self.conn.execute(
             "SELECT COUNT(*) FROM candles WHERE symbol=? AND tf=?", (symbol, tf))
         return cur.fetchone()[0]
+
+    @_locked
+    def latest_candle_time(self, symbol: str, tf: str):
+        cur = self.conn.execute(
+            "SELECT MAX(time) FROM candles WHERE symbol=? AND tf=?", (symbol, tf))
+        row = cur.fetchone()
+        return int(row[0]) if row and row[0] is not None else None
 
     # ------------------------------------------------------------ analysis
     @_locked
@@ -540,6 +553,37 @@ class Store:
             "VALUES(?,?,?,?,?,?,?)",
             rows,
         )
+        self.conn.commit()
+
+    # ------------------------------------------------------------ llm cache
+    @_locked
+    def get_llm_cache(self, cache_key: str, model: str, max_age_seconds: int):
+        import time as _t
+        cur = self.conn.execute(
+            "SELECT response, created_at FROM llm_cache WHERE cache_key=? AND model=?",
+            (cache_key, model),
+        )
+        row = cur.fetchone()
+        if not row:
+            return None
+        if (_t.time() - int(row[1] or 0)) > max_age_seconds:
+            return None
+        try:
+            return json.loads(row[0])
+        except Exception:
+            return None
+
+    @_locked
+    def put_llm_cache(self, cache_key: str, model: str, payload: dict):
+        import time as _t
+        now = int(_t.time())
+        self.conn.execute(
+            "INSERT OR REPLACE INTO llm_cache(cache_key, model, response, created_at) "
+            "VALUES(?,?,?,?)",
+            (cache_key, model, json.dumps(payload), now),
+        )
+        # Periodically prune expired entries (> 24h)
+        self.conn.execute("DELETE FROM llm_cache WHERE created_at < ?", (now - 86400,))
         self.conn.commit()
 
     @_locked
