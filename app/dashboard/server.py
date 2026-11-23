@@ -294,7 +294,7 @@ def create_app(cfg: dict) -> FastAPI:
                 notify_structure_events(store, cfg, all_pairs)
             except Exception as e:
                 debug(f"[telegram] refresh notify error: {e}")
-            state["last_analysis"] = {"at": int(time.time())}"
+            state["last_analysis"] = {"at": int(time.time())}
             state["last_run"] = {"at": int(time.time()), "analyses": n,
                                  "seconds": round(time.time() - t0, 1)}
             state["last_error"] = None
