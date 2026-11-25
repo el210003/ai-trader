@@ -164,6 +164,9 @@ def generate_insights(rows: list, cfg: dict) -> list:
                     {"predicted": round(pred, 3), "realized": round(real, 3)}, len(v["real"])))
 
     # 5 ------------------------------------------------- LLM value
+    hyb_cfg = cfg.get("ai", {}).get("hybrid", {})
+    cur_pen = float(hyb_cfg.get("contradiction_penalty", 5.0))
+    cur_max_adj = float(hyb_cfg.get("max_llm_adjustment", 5.0))
     aligned = [r for r in resolved if _load_features(r) and r["llm_info"]
                and r["llm_info"].get("aligned") is True]
     contra = [r for r in resolved if r["llm_info"] and r["llm_info"].get("aligned") is False]
@@ -173,15 +176,26 @@ def generate_insights(rows: list, cfg: dict) -> list:
             out.append(_insight(
                 "info", "LLM contradiction filter is earning its keep",
                 f"Win rate {wa:.0%} when the LLM agrees vs {wc:.0%} when it "
-                f"contradicts — keep the −20 penalty.", n=len(aligned) + len(contra)))
+                f"contradicts — keep the −{cur_pen:g} contradiction penalty.",
+                n=len(aligned) + len(contra)))
+        elif wa is not None and wc is not None and wc - wa >= 0.10:
+            out.append(_insight(
+                "warn", "LLM contradictions outperform agreements",
+                f"Win rate {wc:.0%} when the LLM contradicts vs {wa:.0%} when it agrees — "
+                f"consider lowering hybrid.contradiction_penalty.",
+                {"config_key": "ai.hybrid.contradiction_penalty",
+                 "current": cur_pen,
+                 "proposed": max(0.0, round(cur_pen - 2.5, 1))},
+                n=len(aligned) + len(contra)))
         elif abs((wa or 0) - (wc or 0)) < 0.05:
             out.append(_insight(
                 "warn", "LLM adds no measurable value",
                 f"Win rate {wa:.0%} (agree) vs {wc:.0%} (contradict) — consider "
-                f"lowering hybrid.llm_weight or raising the ML gate.",
-                {"config_key": "ai.hybrid.llm_weight",
-                 "current": cfg.get("ai", {}).get("hybrid", {}).get("llm_weight", 0.4),
-                 "proposed": 0.25}, n=len(aligned) + len(contra)))
+                f"tightening hybrid.max_llm_adjustment or raising the ML gate.",
+                {"config_key": "ai.hybrid.max_llm_adjustment",
+                 "current": cur_max_adj,
+                 "proposed": max(0.0, round(cur_max_adj - 2.0, 1))},
+                n=len(aligned) + len(contra)))
 
     # 6 ------------------------------------------------- losing regimes
     def by(keyfn, label):

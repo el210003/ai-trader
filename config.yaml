@@ -142,11 +142,13 @@ ai:
     cache_ttl: 900           # reuse cached LLM narrative for 15 min
     max_tokens: 450          # cap output length to keep latency bounded
   hybrid:
-    ml_weight: 0.75          # weight of ML win-probability in final score
-    llm_weight: 0.25         # weight of LLM confidence in final score
+    ml_weight: 0.75          # legacy weight when historical LLM confidence is present
+    llm_weight: 0.25         # legacy weight when historical LLM confidence is present
     buy_threshold: 44        # final score needed to emit BUY/SELL (else WAIT)
     contradiction_penalty: 5.0    # mild penalty when LLM bias disagrees (was 20.0)
     avoid_override_ml_prob: 0.42  # allow strong ML setups (>=0.42) past hard AVOID
+    min_llm_adjustment: -8.0 # max negative score points from LLM risk audit
+    max_llm_adjustment: 5.0  # max positive score points from LLM risk audit
 
 # Currency Strength Meter (CSM28 port): z-scores over the 28 standard pairs,
 # averaged per currency (base +1 / quote -1), smoothed. The engine auto-ingests

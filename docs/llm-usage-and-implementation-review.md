@@ -1,7 +1,7 @@
 # LLM Usage & Implementation Review
 
 **Scope:** End-to-end audit of LLM integration (`app/ai/llm.py`, `app/ai/hybrid.py`, `app/pipeline.py`, `app/data/store.py`, `app/dashboard/server.py`, `app/execution/executor.py`, `app/engine/insights.py`, `app/dashboard/static/index.html`, `config.yaml`) and empirical analysis against `data/trader.db` (`668` journaled setups, `478` resolved outcomes).
-**Status:** P0 & P1 improvements implemented & verified; P2 remaining.
+**Status:** All P0, P1, and P2 improvements implemented & verified.
 
 ---
 
@@ -104,9 +104,10 @@ Querying `setups_history` (`668` setups) joined with `outcomes` (`478` resolved 
 - **Mechanism:** `csm_dir`, `setup_kind` + rejection candle stats, ATR-normalized stop/TP/entry distances, HTF zones/pools, and UTC session were omitted from `build_llm_context()`.
 - **Fix Applied:** Added `csm` (`aligned_direction` + `aligned|opposed|neutral` status), `setup_kind` and `rejection` metrics (`bucket`, `exp`, `clv`, `depth`, `mode`), `entry_distance_atr`, `stop_distance_atr`, `tp_distance_atr`, `session` (`utc_hour` + session bucket from `formed_at`), and per-HTF `entry_vs_equilibrium`, `nearby_zones`, `nearest_buyside_atr`, and `nearest_sellside_atr`.
 
-#### 8. `llm.verdict` Is Requested and Paid For, Then Completely Ignored
-- **Location:** `app/ai/llm.py:22-26, 148`, `app/ai/hybrid.py:5-61`, `app/dashboard/static/index.html:1013-1022`
-- **Mechanism:** `SYSTEM_PROMPT` instructs the model to output `"verdict": "BUY|SELL|WAIT|AVOID"` and `_parse()` validates it, but neither `hybrid.py` nor the UI ever reads `llm["verdict"]`. In the live `AUDCHF` row, `llm.verdict` is `"SELL"` (`confidence: 64`), while the setup card shows `verdict: "WAIT"` (`final_score: 54.7`? Actually `54.7` was from an earlier heuristic run, or `52.4` under `0.75/0.25`). Asking for an unused enum wastes output tokens and creates silent internal contradictions (`bias: "bullish"` with `verdict: "WAIT"`).
+#### 8. `llm.verdict` Was Requested and Paid For, Then Completely Ignored *(FIXED in P2)*
+- **Location:** `app/ai/llm.py:12-34, 198-235`, `app/ai/hybrid.py:5-78`, `app/dashboard/static/index.html:1000-1035`
+- **Mechanism:** `SYSTEM_PROMPT` instructed the model to output an unused `"verdict": "BUY|SELL|WAIT|AVOID"` enum alongside raw `0–100` `confidence`.
+- **Fix Applied:** Replaced `confidence` + unused `verdict` with a focused qualitative risk-audit schema (`bias`, `quality`, bounded `score_adjustment` in `[-8, +5]`, `risk_flags`, `narrative`, `invalidation`, `concerns`) while preserving backward-compatible fallback parsing for legacy `0–100` `confidence` responses.
 
 ---
 
@@ -127,10 +128,10 @@ Querying `setups_history` (`668` setups) joined with `outcomes` (`478` resolved 
 - **Mechanism:** No `<think>` stripping before JSON extraction, no `max_tokens` or `json_mode`, unpooled `requests.post` calls, and no latency/error/token telemetry.
 - **Fix Applied:** Added `<think>...</think>` stripping in `_parse()`, persistent `requests.Session` with `HTTPAdapter(pool_connections=8, pool_maxsize=8)`, configurable `max_tokens` (`450`) and `json_mode` (`False`), thread-safe `LLMAnalyzer.stats()` counters (`calls`, `succeeded`, `cache_hits_mem`, `cache_hits_db`, `timeouts`, `http_errors`, `parse_errors`, `avg_latency_ms`, `prompt_tokens`, `completion_tokens`), and exposed `llm` stats on `GET /api/status`.
 
-#### 12. Minor UI & Maintenance Drift
-- **Silent LLM failure in UI (`app/dashboard/static/index.html:999-1006`):** `aiBoxHtml()` explains why the LLM was skipped when `ml_prob < gate`, but renders nothing when `ml_prob >= gate` and the LLM call timed out or failed (`score_source == "ml"`). Showing a muted notice (`"AI analyst unavailable (timeout/error) — scored by ML only"`) makes failures visible.
-- **Stale text in `app/engine/insights.py:176, 183`:** Hardcodes `"keep the −20 penalty"` and default `llm_weight = 0.4` instead of reading `ai.hybrid.contradiction_penalty` (`5.0`) and `ai.hybrid.llm_weight` (`0.25`).
-- **Stale docs in `docs/hybrid-fusion.md`:** Still documents pre-Phase-4 defaults (`0.6`/`0.4` weights, `buy_threshold: 60`, `-20` hard `AVOID`).
+#### 12. Minor UI & Maintenance Drift *(FIXED in P2)*
+- **Dashboard AI analyst card (`app/dashboard/static/index.html:1000-1035`):** `aiBoxHtml()` now renders a muted notice (`"AI analyst unavailable (timeout or endpoint error) — scored by ML only."`) when `llm_enabled` is true and `s.llm` is absent above the ML gate, and displays `quality`, signed `score_adjustment` (`+N pts` / `-N pts`), and `risk_flags` pills (with legacy `confidence/100` fallback).
+- **Dynamic insight recommendations (`app/engine/insights.py:166-197`):** Reads live `ai.hybrid.contradiction_penalty` and `ai.hybrid.max_llm_adjustment` instead of hardcoded `-20` / `0.4` strings, and alerts when LLM contradictions outperform agreements.
+- **Updated documentation (`docs/hybrid-fusion.md`):** Rewritten to reflect the calibrated ML anchor + bounded `[-8, +5]` LLM risk-audit fusion architecture and current `config.yaml` defaults.
 
 ---
 
@@ -169,12 +170,10 @@ Right now, the LLM is used as a **0–100 numeric probability estimator** blende
 | **P1** | **DONE** | Fix `build_llm_context()`: filter `liquidity_pools` to nearest active pools within `±5 ATR`, label `close_range_position` vs `entry_range_position`, convert timestamps to `bars_ago`, add `csm_dir`, `setup_kind`, `stop_distance_atr`, `entry_distance_atr`, HTF zones/pools, and UTC session | `app/pipeline.py` | Cuts prompt noise/tokens (`2,794 -> 2,020` chars on `AUDCHF`) while giving accurate spatial & MTF context |
 | **P1** | **DONE** | Reuse Pass-1 `smc` + `htf` in `enrich_analysis_llm()` instead of re-running `smc_mod.analyze()` | `app/pipeline.py` | Eliminates redundant SQLite candle loads & SMC/MTF recomputation during Pass-2 enrichment |
 | **P1** | **DONE** | Harden `LLMAnalyzer`: `requests.Session` pooling, `<think>` stripping, `max_tokens`, optional `json_mode`, expanded `_cache_key` (`ml_prob`, `trend`, `PROMPT_VERSION`), and telemetry exposed on `/api/status` | `app/ai/llm.py`, `app/dashboard/server.py`, `config.yaml`, `app/config.py` | Faster bar-close bursts, resilient JSON parsing, and full latency/token/error observability |
-| **P2** | Planned | Replace raw `0–100` `llm.confidence` linear blend with bounded `score_adjustment` (`[-8, +5]`) or centered residual, and remove unused `llm.verdict` | `app/ai/llm.py`, `app/ai/hybrid.py`, `config.yaml` | Fixes ROC-AUC degradation (`0.4699 -> >=0.504`) and stops suppressing valid ML setups |
-| **P2** | Planned | Update UI fallback message when LLM fails, fix stale `-20` / `0.4` strings in `insights.py`, and update `docs/hybrid-fusion.md` | `app/dashboard/static/index.html`, `app/engine/insights.py`, `docs/hybrid-fusion.md` | Transparent UI diagnostics and accurate documentation |
+| **P2** | **DONE** | Replace raw `0–100` `llm.confidence` linear blend with bounded `score_adjustment` (`[-8, +5]`) around `ml_prob * 100`, add `quality` + `risk_flags`, and remove unused `llm.verdict` | `app/ai/llm.py`, `app/ai/hybrid.py`, `app/data/store.py`, `app/config.py`, `config.yaml` | Preserves Platt-calibrated ML ranking (`ROC-AUC >= 0.504`) and stops uncalibrated confidences from demoting valid setups |
+| **P2** | **DONE** | Update UI fallback message when LLM fails + render `quality`/`score_adjustment`/`risk_flags`, fix stale `-20` / `0.4` strings in `insights.py`, and update `docs/hybrid-fusion.md` | `app/dashboard/static/index.html`, `app/engine/insights.py`, `docs/hybrid-fusion.md` | Transparent UI diagnostics, accurate insight recommendations, and up-to-date docs |
 
-### Verification Log (P0 & P1)
+### Verification Log (P0, P1 & P2)
 - **P0:** `scripts/smoke_execution.py` passed (`exit 0`); verified `store.append_setups()` updates `payload` on Pass-2 re-save; verified `ExecutionEngine._candidates()` defers `meta.llm_pending == True` for up to `45s`; verified `llm_cache` + `idx_llm_cache_created` in `data/trader.db` and `min_ml_prob == 0.41`.
-- **P1:** `scripts/smoke_execution.py` and `scripts/smoke_telegram.py` passed (`exit 0`).
-- **P1 Context (`app/pipeline.py`):** Verified `build_llm_context()` on live `AUDCHF M15` drops 37-day-old pools (`2,794 -> 2,020` chars), emits `close_range_position` vs `entry_range_position`, `bars_ago` on events/sweeps, `stop_distance_atr` (`5.99`), `tp_distance_atr` (`9.14`), `entry_distance_atr` (`0.76`), `csm` alignment, and `session`.
-- **P1 Pass-2 Reuse (`app/pipeline.py`):** Verified `enrich_analysis_llm()` completes Pass-2 enrichment using stored Pass-1 `smc` + `htf` with zero candle queries.
-- **P1 Client Hardening (`app/ai/llm.py`, `app/dashboard/server.py`):** Verified `<think>{...}</think>` stripping, distinct `_cache_key` hashes across `ml_win_probability` / `trend` / `PROMPT_VERSION`, and `LLMAnalyzer.stats()` telemetry.
+- **P1:** `scripts/smoke_execution.py` and `scripts/smoke_telegram.py` passed (`exit 0`); verified `build_llm_context()` (`2,794 -> 2,020` chars, active nearby pools, `bars_ago`, ATR distances, CSM, session), zero-candle Pass-2 reuse in `enrich_analysis_llm()`, `<think>` stripping, expanded `_cache_key`, and `LLMAnalyzer.stats()`.
+- **P2:** `scripts/smoke_execution.py` and `scripts/smoke_telegram.py` passed (`exit 0`); verified `LLMAnalyzer._parse()` clamping (`[-8, +5]`), `risk_flags` normalization, and legacy `confidence` fallback; verified `hybrid.fuse()` across positive/negative adjustments, directional contradiction overrides, and legacy confidence records; verified `store.append_setups()` persistence of `llm_adjustment`/`llm_quality`/`llm_risk_flags`, `insights.py` live config reporting, and `index.html` AI box rendering.

@@ -309,6 +309,8 @@ aside::-webkit-scrollbar-thumb{background:var(--border2);border-radius:4px}
 .ai-body{padding:9px 11px 10px}
 .ai-verdict-line{display:flex;gap:8px;font-size:10.5px;color:var(--muted);margin-bottom:6px;flex-wrap:wrap}
 .ai-verdict-line b{color:var(--text)}
+.ai-flags{display:flex;flex-wrap:wrap;gap:4px;margin:0 0 6px}
+.ai-flag{font-family:var(--mono);font-size:9px;padding:1px 6px;border-radius:5px;background:rgba(245,184,61,.1);border:1px solid rgba(245,184,61,.25);color:var(--amber)}
 .ai-narrative{font-size:12px;color:#c6cfe0;line-height:1.55}
 .ai-inval{display:flex;gap:6px;margin-top:8px;font-size:10.5px;color:var(--amber);background:var(--amber-dim);border:1px solid rgba(245,184,61,.2);border-radius:7px;padding:6px 8px}
 .ai-inval .k{font-weight:700;letter-spacing:.5px;flex:none}
@@ -999,8 +1001,11 @@ function aiBoxHtml(s, meta){
   if (!llm){
     // transparency: why is there no AI narrative?
     const gate = meta?.llm_gate || 0;
-    if (meta?.llm_enabled && s.ml_prob != null && gate > 0 && s.ml_prob < gate){
-      return `<div class="ai-box"><div class="ai-body"><div class="muted">AI analyst skipped — ML win-probability ${(s.ml_prob*100).toFixed(0)}% is below the ${(gate*100).toFixed(0)}% gate (saves tokens; verdict is WAIT anyway).</div></div></div>`;
+    if (meta?.llm_enabled){
+      if (s.ml_prob != null && gate > 0 && s.ml_prob < gate){
+        return `<div class="ai-box"><div class="ai-body"><div class="muted">AI analyst skipped — ML win-probability ${(s.ml_prob*100).toFixed(0)}% is below the ${(gate*100).toFixed(0)}% gate (saves tokens; verdict is WAIT anyway).</div></div></div>`;
+      }
+      return `<div class="ai-box"><div class="ai-body"><div class="muted">AI analyst unavailable (timeout or endpoint error) — scored by ML only.</div></div></div>`;
     }
     return '';
   }
@@ -1010,11 +1015,18 @@ function aiBoxHtml(s, meta){
     : agrees ? '<span style="color:var(--green)">agrees with setup</span>'
     : '<span style="color:var(--red)">contradicts the setup</span>';
   const modelLbl = (llm.model||'') + (llm._cached ? ' · cached' : '');
+  const hasAdj = llm.score_adjustment != null;
+  const adjNum = hasAdj ? Number(llm.score_adjustment) : null;
+  const adjTxt = hasAdj ? `${adjNum >= 0 ? '+' : ''}${adjNum} pts` : `${llm.confidence}/100`;
+  const qualTxt = llm.quality ? `quality <b>${esc(llm.quality)}</b> · ` : '';
+  const metricLbl = hasAdj ? `${qualTxt}adj <b>${esc(adjTxt)}</b>` : `conviction <b>${esc(adjTxt)}</b>`;
+  const flags = Array.isArray(llm.risk_flags) ? llm.risk_flags : [];
   return `
   <div class="ai-box">
     <div class="ai-head"><span class="spark">✦</span><span class="t">AI ANALYST</span><span class="model">${esc(modelLbl)}</span></div>
     <div class="ai-body">
-      <div class="ai-verdict-line">bias <b>${esc(llm.bias)}</b> · conviction <b>${esc(llm.confidence)}/100</b> · ${agreeTxt}</div>
+      <div class="ai-verdict-line">bias <b>${esc(llm.bias)}</b> · ${metricLbl} · ${agreeTxt}</div>
+      ${flags.length ? `<div class="ai-flags">${flags.map(f=>`<span class="ai-flag">${esc(f)}</span>`).join('')}</div>` : ''}
       <div class="ai-narrative">${esc(llm.narrative)}</div>
       ${llm.invalidation ? `<div class="ai-inval"><span class="k">INVALIDATION</span><span>${esc(llm.invalidation)}</span></div>` : ''}
       ${(llm.concerns||[]).length ? `<ul class="ai-concerns">${llm.concerns.map(c=>`<li>${esc(c)}</li>`).join('')}</ul>` : ''}

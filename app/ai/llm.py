@@ -11,28 +11,30 @@ from requests.adapters import HTTPAdapter
 
 from ..logsetup import debug
 
-SYSTEM_PROMPT = """You are an elite Smart Money Concepts (SMC) forex trading analyst reviewing \
-algorithmically generated trade setups.
+SYSTEM_PROMPT = """You are an elite Smart Money Concepts (SMC) forex risk auditor reviewing \
+algorithmically generated trade setups whose baseline probability is already scored by a \
+calibrated ML model (ml_win_probability).
 
-Weigh: market structure (BOS/CHoCH), liquidity sweeps, premium/discount positioning, \
-order blocks, fair value gaps, risk:reward, and the supplied ML win-probability.
+Your job is NOT to re-estimate raw win probability from scratch, but to audit structural and \
+execution quality and apply a bounded qualitative adjustment (-8 to +5 score points):
+- Positive (+1 to +5): clean structure alignment, fresh unmitigated zone, unobstructed path to \
+  TP (no opposing HTF OB/FVG in the way), supportive CSM/session, and tight stop width.
+- Zero (0): standard setup with balanced pros and cons.
+- Negative (-1 to -8): concrete red flags such as opposing HTF OB/FVG blocking TP, excessive \
+  stop_distance_atr (>3.5 ATR), entry in the wrong HTF dealing-range half, sweep exhaustion, \
+  CSM opposition, or thin off-hours chop.
 
-Note: These setups are structural liquidity-sweep / zone-retest reversals (a prior \
-liquidity sweep is a bullish/bearish reversal trigger, not a reason to oppose the setup). \
-Be skeptical only when: RR is poor, the entry sits in the wrong half of the dealing range, \
-higher-timeframe (HTF) trend opposes the direction, the move looks extended, or \
-confluences are weak.
+Note: These setups are structural liquidity-sweep / zone-retest reversals (a prior liquidity \
+sweep in the setup's favor is a reversal trigger, not a reason to oppose the trade).
 
 Respond with ONLY a JSON object (no markdown, no prose) using exactly this schema:
 {"bias": "bullish|bearish|neutral",
- "confidence": <integer 0-100, your conviction in the setup direction>,
- "narrative": "<2-4 sentence professional analysis>",
+ "quality": "high|medium|low",
+ "score_adjustment": <integer -8 to 5>,
+ "risk_flags": ["<snake_case_flag>", ...],
+ "narrative": "<2-3 sentence concise structural & risk analysis>",
  "invalidation": "<what specifically invalidates this setup>",
- "concerns": ["<risk factor>", ...],
- "verdict": "BUY|SELL|WAIT|AVOID"}
-
-verdict meaning: BUY = take the long setup, SELL = take the short setup,
-WAIT = setup lacks quality, AVOID = the trade goes against your read."""
+ "concerns": ["<specific risk factor>", ...]}"""
 
 PROMPT_VERSION = hashlib.md5(SYSTEM_PROMPT.encode("utf-8")).hexdigest()[:8]
 
@@ -226,23 +228,49 @@ class LLMAnalyzer:
         bias = str(data.get("bias", "neutral")).lower()
         if bias not in ("bullish", "bearish", "neutral"):
             bias = "neutral"
-        try:
-            conf = max(0, min(100, int(float(data.get("confidence", 50)))))
-        except (TypeError, ValueError):
-            conf = 50
-        verdict = str(data.get("verdict", "WAIT")).upper()
-        if verdict not in ("BUY", "SELL", "WAIT", "AVOID"):
-            verdict = "WAIT"
+
+        raw_adj = data.get("score_adjustment")
+        if raw_adj is not None:
+            try:
+                adj = max(-8, min(5, int(round(float(raw_adj)))))
+            except (TypeError, ValueError):
+                adj = 0
+        elif data.get("confidence") is not None:
+            # backward-compat mapping if a model emits legacy 0-100 confidence
+            try:
+                conf_v = float(data.get("confidence", 50))
+                adj = max(-8, min(5, int(round((conf_v - 50.0) / 10.0))))
+            except (TypeError, ValueError):
+                adj = 0
+        else:
+            adj = 0
+
+        quality = str(data.get("quality", "")).lower().strip()
+        if quality not in ("high", "medium", "low"):
+            quality = "high" if adj >= 2 else ("low" if adj <= -3 else "medium")
+
+        raw_flags = data.get("risk_flags") or []
+        if not isinstance(raw_flags, list):
+            raw_flags = [str(raw_flags)]
+        risk_flags = []
+        for f in raw_flags:
+            clean_f = re.sub(r"[^a-z0-9_]+", "_", str(f).lower()).strip("_")[:48]
+            if clean_f and clean_f not in risk_flags:
+                risk_flags.append(clean_f)
+            if len(risk_flags) >= 6:
+                break
+
         concerns = data.get("concerns") or []
         if not isinstance(concerns, list):
             concerns = [str(concerns)]
 
         return {
             "bias": bias,
-            "confidence": conf,
+            "quality": quality,
+            "score_adjustment": adj,
+            "risk_flags": risk_flags,
             "narrative": str(data.get("narrative", ""))[:1200],
             "invalidation": str(data.get("invalidation", ""))[:500],
             "concerns": [str(c)[:200] for c in concerns][:6],
-            "verdict": verdict,
             "model": data.get("_model", ""),
         }

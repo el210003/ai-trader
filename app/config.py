@@ -79,6 +79,8 @@ DEFAULTS = {
             "buy_threshold": 44,
             "contradiction_penalty": 5.0,
             "avoid_override_ml_prob": 0.42,
+            "min_llm_adjustment": -8.0,
+            "max_llm_adjustment": 5.0,
         },
     },
     "csm": {
