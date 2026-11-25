@@ -138,7 +138,7 @@ ai:
     # Speed controls for bar-close bursts (LLM calls only happen for setups
     # whose ML win-probability clears the gate; identical setups within the TTL
     # reuse the SQLite-backed cached narrative across workers & bar closes):
-    min_ml_prob: 0.40        # skip LLM when ML win-probability < 40%
+    min_ml_prob: 0.41        # skip LLM when ML win-probability < 41% (aligned with execution.min_ml_prob)
     cache_ttl: 900           # reuse cached LLM narrative for 15 min
   hybrid:
     ml_weight: 0.75          # weight of ML win-probability in final score

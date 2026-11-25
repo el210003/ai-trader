@@ -256,6 +256,9 @@ class ExecutionEngine:
             generated_at = int(payload.get("generated_at") or 0)
             if fresh_seconds > 0 and now - generated_at > fresh_seconds:
                 continue            # stale analysis -- a newer one will follow
+            a_meta = payload.get("meta") or {}
+            if a_meta.get("llm_pending") and (now - generated_at) <= 45:
+                continue            # wait for Pass-2 LLM enrichment before firing
             for s in payload.get("setups") or []:
                 if (s.get("verdict") or "").upper() in ("BUY", "SELL") and s.get("entry"):
                     s = dict(s)

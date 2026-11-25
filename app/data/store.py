@@ -130,10 +130,11 @@ class Store:
             );
             """
         )
-        # execution log indexes
+        # execution & llm cache indexes
         try:
             self.conn.execute("CREATE INDEX IF NOT EXISTS idx_trades_identity ON trades(identity)")
             self.conn.execute("CREATE INDEX IF NOT EXISTS idx_trades_time ON trades(placed_at)")
+            self.conn.execute("CREATE INDEX IF NOT EXISTS idx_llm_cache_created ON llm_cache(created_at)")
             self.conn.commit()
         except Exception:
             pass
@@ -261,11 +262,11 @@ class Store:
                                     (identity,))
             ex = cur.fetchone()
             if ex:
-                # update in place: latest verdict/score on the existing row
+                # update in place: latest verdict/score/payload on the existing row
                 self.conn.execute(
                     "UPDATE setups_history SET verdict=?, score=?, ml_prob=?, close=?, "
-                    "logged_at=? WHERE id=?",
-                    (r[5], r[6], r[7], r[12], r[2], ex[0]))
+                    "logged_at=?, payload=? WHERE id=?",
+                    (r[5], r[6], r[7], r[12], r[2], r[15], ex[0]))
             else:
                 inserts.append(r)
 

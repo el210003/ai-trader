@@ -7,6 +7,8 @@ import time
 
 import requests
 
+from ..logsetup import debug
+
 SYSTEM_PROMPT = """You are an elite Smart Money Concepts (SMC) forex trading analyst reviewing \
 algorithmically generated trade setups.
 
@@ -41,6 +43,7 @@ class LLMAnalyzer:
         self._key_env = self.cfg.get("api_key_env", "OPENAI_API_KEY")
         self._cache = {}   # key -> (timestamp, response dict)
         self._store = store
+        self._cache_err_logged = False
 
     @property
     def has_key(self) -> bool:
@@ -79,8 +82,10 @@ class LLMAnalyzer:
                         out = dict(db_resp)
                         out["_cached"] = True
                         return out
-                except Exception:
-                    pass
+                except Exception as e:
+                    if not self._cache_err_logged:
+                        self._cache_err_logged = True
+                        debug(f"[llm] sqlite cache read failed: {e}")
         headers = {"Content-Type": "application/json"}
         api_key = os.getenv(self._key_env, "")
         if api_key:
@@ -109,10 +114,15 @@ class LLMAnalyzer:
                 if ttl and self._store is not None:
                     try:
                         self._store.put_llm_cache(key, self.model, parsed)
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        if not self._cache_err_logged:
+                            self._cache_err_logged = True
+                            debug(f"[llm] sqlite cache write failed: {e}")
+            else:
+                debug(f"[llm] unparseable response from {self.model}: {str(content)[:160]!r}")
             return parsed
-        except Exception:
+        except Exception as e:
+            debug(f"[llm] request failed ({self.model}): {e}")
             return None
 
     def _cache_key(self, context: dict) -> str:

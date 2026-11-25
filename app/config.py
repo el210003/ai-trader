@@ -68,7 +68,7 @@ DEFAULTS = {
             "model": "gpt-4o-mini",
             "temperature": 0.2,
             "timeout": 15,
-            "min_ml_prob": 0.40,      # skip the LLM when ML win-prob is below this
+            "min_ml_prob": 0.41,      # skip the LLM when ML win-prob is below this
             "cache_ttl": 900,         # identical setups reuse the LLM answer for N seconds
         },
         "hybrid": {

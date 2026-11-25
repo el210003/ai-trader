@@ -1,6 +1,7 @@
 # LLM Usage & Implementation Review
 
 **Scope:** End-to-end audit of LLM integration (`app/ai/llm.py`, `app/ai/hybrid.py`, `app/pipeline.py`, `app/data/store.py`, `app/dashboard/server.py`, `app/execution/executor.py`, `app/engine/insights.py`, `app/dashboard/static/index.html`, `config.yaml`) and empirical analysis against `data/trader.db` (`668` journaled setups, `478` resolved outcomes).
+**Status:** P0 critical fixes implemented & verified; P1/P2 improvements planned.
 
 ---
 
@@ -62,35 +63,27 @@ Querying `setups_history` (`668` setups) joined with `outcomes` (`478` resolved 
 
 ## 4. Bugs & Architectural Issues (Prioritized)
 
-### Critical — Data Integrity & Execution Safety
+### Critical — Data Integrity & Execution Safety *(P0 — Implemented & Verified)*
 
-#### 1. `store.append_setups()` Corrupts `setups_history.payload` on Pass 2
-- **Location:** `app/data/store.py:263-268`
-- **Mechanism:** In bar-close mode, Pass 1 (`skip_llm=True`) inserts a new setup into `setups_history` with `score = ml_prob * 100` and `payload` containing `{"score_source": "ml", "llm_score": null, "aligned": true}`. When Pass 2 (`enrich_analysis_llm`) finishes seconds later and calls `store.append_setups()`, the `if ex:` branch executes:
-  ```python
-  self.conn.execute(
-      "UPDATE setups_history SET verdict=?, score=?, ml_prob=?, close=?, "
-      "logged_at=? WHERE id=?",
-      (r[5], r[6], r[7], r[12], r[2], ex[0]))
-  ```
-  **`payload` is omitted from the `UPDATE`!**
-- **Evidence in `data/trader.db`:** Multiple rows (e.g., `id=2386 EURUSD BUY score=46.4 ml=0.409`, `id=2392 USDCAD SELL score=49.6 ml=0.435`) have LLM-fused `score` and `verdict` columns, while their JSON `payload` still records `score_source: "ml"`, `llm_score: null`, `aligned: true`. If the LLM contradicted (`aligned=False`), `payload.aligned` stays `True` forever, directly skewing `app/engine/insights.py:167-184`.
-- **Fix:** Include `payload=?` in the `UPDATE setups_history` statement in `store.append_setups()`.
+#### 1. `store.append_setups()` Corrupted `setups_history.payload` on Pass 2 *(FIXED)*
+- **Location:** `app/data/store.py:263-269`
+- **Mechanism:** In bar-close mode, Pass 1 (`skip_llm=True`) inserted a new setup into `setups_history` with `score = ml_prob * 100` and `payload` containing `{"score_source": "ml", "llm_score": null, "aligned": true}`. When Pass 2 (`enrich_analysis_llm`) finished seconds later and called `store.append_setups()`, the `if ex:` branch updated `verdict`, `score`, `ml_prob`, `close`, and `logged_at`, **omitting `payload`**. Historical rows (e.g., `id=2386`, `id=2392`) retained stale `score_source: "ml"`, `llm_score: null`, and `aligned: true`, skewing `app/engine/insights.py:167-184`.
+- **Fix Applied:** Added `payload=?` (`r[15]`) to the `UPDATE setups_history` statement in `store.append_setups()`.
 
-#### 2. `llm_cache` Table Missing in Live `data/trader.db` + Silent Exception Swallowing
-- **Location:** `app/ai/llm.py:72-80, 111-115` and `app/data/store.py:125-130`
-- **Mechanism:** `data/trader.db` currently has no `llm_cache` table (the running server predates the schema addition or opened before migration), and `LLMAnalyzer.analyze_setup()` wraps both `get_llm_cache` and `put_llm_cache` in `except Exception: pass`. Every SQLite cache read/write silently fails without logging, leaving only per-process RAM caching.
-- **Fix:** Ensure `Store._create()` runs on startup (restart server or run migration), and log cache/API failures via `debug()` instead of bare `except Exception: pass`.
+#### 2. `llm_cache` Table Missing in Live `data/trader.db` + Silent Exception Swallowing *(FIXED)*
+- **Location:** `app/ai/llm.py:75-86, 114-126` and `app/data/store.py:125-138`
+- **Mechanism:** `data/trader.db` lacked the `llm_cache` table (opened prior to schema addition) and `LLMAnalyzer.analyze_setup()` swallowed all cache and API exceptions with bare `except Exception: pass`.
+- **Fix Applied:** Added `CREATE INDEX IF NOT EXISTS idx_llm_cache_created ON llm_cache(created_at)` in `Store._create()`, migrated `data/trader.db` so `llm_cache` and `idx_llm_cache_created` exist, and added `debug()` logging in `LLMAnalyzer` for SQLite cache errors, unparseable responses, and request exceptions.
 
-#### 3. Two-Pass Race Condition with `ExecutionEngine`
-- **Location:** `app/execution/executor.py:253-264`, `app/pipeline.py:158-160, 179-180`
-- **Mechanism:** Pass 1 saves `analysis` with `meta.llm_pending = True` and an interim `ml`-only `verdict` (`BUY`/`SELL` whenever `ml_prob >= 0.44`). `ExecutionEngine` polls every `15s` (`fresh_seconds = 120`) and checks `payload.get("setups")` without inspecting `meta.llm_pending`. When multiple pairs queue for Pass 2 (`max_workers=4`), `ExecutionEngine` can fire an order during Pass 1 before the LLM has a chance to flag `AVOID` or lower the score.
-- **Fix:** In `ExecutionEngine._candidates()`, skip analyses where `(payload.get("meta") or {}).get("llm_pending")` is `True` (with a safety fallback if `now - generated_at > 45s` in case Pass 2 crashed).
+#### 3. Two-Pass Race Condition with `ExecutionEngine` *(FIXED)*
+- **Location:** `app/execution/executor.py:259-261`, `app/pipeline.py:158-160, 179-180`
+- **Mechanism:** Pass 1 saves `analysis` with `meta.llm_pending = True` and an interim `ml`-only `verdict` (`BUY`/`SELL` whenever `ml_prob >= 0.44`). `ExecutionEngine` polled `analysis` every `15s` without inspecting `meta.llm_pending`, risking order placement before Pass-2 LLM enrichment completed.
+- **Fix Applied:** Updated `ExecutionEngine._candidates()` to defer analyses where `(payload.get("meta") or {}).get("llm_pending")` is `True`, with a `45s` timeout fallback (`(now - generated_at) <= 45`) so a stalled Pass 2 cannot block execution indefinitely.
 
-#### 4. Dashboard vs. Executor Gate Split-Brain
-- **Location:** `config.yaml:141, 146, 207-208`
-- **Mechanism:** `ai.llm.min_ml_prob` is `0.40` and `ai.hybrid.buy_threshold` is `44`, while `execution.min_ml_prob` is `0.41`. With `MiniMax-M3` returning confidences around `58–69`, a setup with `ml_prob = 0.399` (e.g., `id=2400 USDJPY`) reaches `final_score = 44.4` and displays **`BUY`** on the dashboard, yet `ExecutionEngine` unconditionally skips it (`ml_prob 0.40 < min_ml_prob 0.41`).
-- **Fix:** Align `ai.llm.min_ml_prob` with `execution.min_ml_prob` (`0.41`) — which also saves tokens on setups the executor will never trade — or align `execution.min_ml_prob` with the intended hybrid floor.
+#### 4. Dashboard vs. Executor Gate Split-Brain *(FIXED)*
+- **Location:** `config.yaml:141, 208` and `app/config.py:71`
+- **Mechanism:** `ai.llm.min_ml_prob` was `0.40` while `execution.min_ml_prob` was `0.41`, allowing setups in `[0.40, 0.41)` (e.g., `id=2400 USDJPY`, `ml=0.399`, `score=44.4`) to show `BUY` on the dashboard while always being rejected by `ExecutionEngine`.
+- **Fix Applied:** Aligned `ai.llm.min_ml_prob` to `0.41` in both `config.yaml` and `app/config.py`.
 
 ---
 
@@ -185,13 +178,19 @@ Right now, the LLM is used as a **0–100 numeric probability estimator** blende
 
 ## 6. Concrete Action Plan
 
-| Priority | Change | Target Files | Impact |
-|---|---|---|---|
-| **P0** | Add `payload=?` to `UPDATE setups_history` in `append_setups()` | `app/data/store.py` | Stops Pass-2 corruption of historical `llm_score`, `aligned`, and `score_source` |
-| **P0** | Skip `meta.llm_pending == True` setups in `ExecutionEngine._candidates()` (with 45s timeout guard) | `app/execution/executor.py` | Prevents live orders firing on Pass-1 scores before Pass-2 LLM review completes |
-| **P0** | Align `ai.llm.min_ml_prob` (`0.40 -> 0.41`) with `execution.min_ml_prob` and ensure `llm_cache` table exists | `config.yaml`, `app/config.py`, `app/data/store.py` | Eliminates dashboard `BUY` vs executor skip mismatch & restores cross-worker SQLite caching |
-| **P1** | Fix `build_llm_context()`: filter `liquidity_pools` to nearest active pools within `±5 ATR`, label `close_range_position` vs `entry_range_position`, convert timestamps to `bars_ago`, add `csm_dir`, `setup_kind`, `stop_distance_atr`, `entry_distance_atr`, HTF zones/pools, and UTC session | `app/pipeline.py` | Cuts prompt noise/tokens while giving the LLM accurate spatial & MTF context |
-| **P1** | Reuse Pass-1 `smc` + `htf` in `enrich_analysis_llm()` instead of re-running `smc_mod.analyze()` | `app/pipeline.py` | Eliminates redundant CPU work during Pass-2 bar-close enrichment |
-| **P1** | Harden `LLMAnalyzer`: `requests.Session` pooling, `<think>` stripping, `max_tokens`, optional `response_format`, expanded `_cache_key` (`ml_prob`, `trend`, `PROMPT_VERSION`), and error/latency logging | `app/ai/llm.py` | Faster bar-close bursts, fewer parse/timeout failures, and full observability |
-| **P2** | Replace raw `0–100` `llm.confidence` linear blend with bounded `score_adjustment` (`[-8, +5]`) or centered residual, and remove unused `llm.verdict` | `app/ai/llm.py`, `app/ai/hybrid.py`, `config.yaml` | Fixes ROC-AUC degradation (`0.4699 -> >=0.504`) and stops suppressing valid ML setups |
-| **P2** | Update UI fallback message when LLM fails, fix stale `-20` / `0.4` strings in `insights.py`, and update `docs/hybrid-fusion.md` | `app/dashboard/static/index.html`, `app/engine/insights.py`, `docs/hybrid-fusion.md` | Transparent UI diagnostics and accurate documentation |
+| Priority | Status | Change | Target Files | Impact |
+|---|---|---|---|---|
+| **P0** | **DONE** | Add `payload=?` to `UPDATE setups_history` in `append_setups()` | `app/data/store.py` | Stops Pass-2 corruption of historical `llm_score`, `aligned`, and `score_source` |
+| **P0** | **DONE** | Skip `meta.llm_pending == True` setups in `ExecutionEngine._candidates()` (with 45s timeout guard) | `app/execution/executor.py` | Prevents live orders firing on Pass-1 scores before Pass-2 LLM review completes |
+| **P0** | **DONE** | Align `ai.llm.min_ml_prob` (`0.40 -> 0.41`) with `execution.min_ml_prob`, ensure `llm_cache` table + index exist, and log cache/API errors | `config.yaml`, `app/config.py`, `app/data/store.py`, `app/ai/llm.py` | Eliminates dashboard `BUY` vs executor skip mismatch & restores observable cross-worker SQLite caching |
+| **P1** | Planned | Fix `build_llm_context()`: filter `liquidity_pools` to nearest active pools within `±5 ATR`, label `close_range_position` vs `entry_range_position`, convert timestamps to `bars_ago`, add `csm_dir`, `setup_kind`, `stop_distance_atr`, `entry_distance_atr`, HTF zones/pools, and UTC session | `app/pipeline.py` | Cuts prompt noise/tokens while giving the LLM accurate spatial & MTF context |
+| **P1** | Planned | Reuse Pass-1 `smc` + `htf` in `enrich_analysis_llm()` instead of re-running `smc_mod.analyze()` | `app/pipeline.py` | Eliminates redundant CPU work during Pass-2 bar-close enrichment |
+| **P1** | Planned | Harden `LLMAnalyzer`: `requests.Session` pooling, `<think>` stripping, `max_tokens`, optional `response_format`, expanded `_cache_key` (`ml_prob`, `trend`, `PROMPT_VERSION`), and error/latency logging | `app/ai/llm.py` | Faster bar-close bursts, fewer parse/timeout failures, and full observability |
+| **P2** | Planned | Replace raw `0–100` `llm.confidence` linear blend with bounded `score_adjustment` (`[-8, +5]`) or centered residual, and remove unused `llm.verdict` | `app/ai/llm.py`, `app/ai/hybrid.py`, `config.yaml` | Fixes ROC-AUC degradation (`0.4699 -> >=0.504`) and stops suppressing valid ML setups |
+| **P2** | Planned | Update UI fallback message when LLM fails, fix stale `-20` / `0.4` strings in `insights.py`, and update `docs/hybrid-fusion.md` | `app/dashboard/static/index.html`, `app/engine/insights.py`, `docs/hybrid-fusion.md` | Transparent UI diagnostics and accurate documentation |
+
+### P0 Verification Log
+- `scripts/smoke_execution.py` passed (`exit 0`).
+- Verified `store.append_setups()` updates `setups_history.payload` (`score_source`, `llm_score`, `aligned`) alongside `verdict` and `score` on Pass-2 re-save.
+- Verified `ExecutionEngine._candidates()` defers analyses with `meta.llm_pending == True` within `45s` and releases them once `llm_pending` becomes `False` (or after the `45s` safety timeout).
+- Verified `llm_cache` table and `idx_llm_cache_created` exist in `data/trader.db`, and `ai.llm.min_ml_prob == execution.min_ml_prob == 0.41`.
