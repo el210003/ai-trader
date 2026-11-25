@@ -1,7 +1,7 @@
 # LLM Usage & Implementation Review
 
 **Scope:** End-to-end audit of LLM integration (`app/ai/llm.py`, `app/ai/hybrid.py`, `app/pipeline.py`, `app/data/store.py`, `app/dashboard/server.py`, `app/execution/executor.py`, `app/engine/insights.py`, `app/dashboard/static/index.html`, `config.yaml`) and empirical analysis against `data/trader.db` (`668` journaled setups, `478` resolved outcomes).
-**Status:** P0 critical fixes implemented & verified; P1/P2 improvements planned.
+**Status:** P0 & P1 improvements implemented & verified; P2 remaining.
 
 ---
 
@@ -87,29 +87,22 @@ Querying `setups_history` (`668` setups) joined with `outcomes` (`478` resolved 
 
 ---
 
-### High — Prompt & Context Engineering Flaws
+### High — Prompt & Context Engineering Flaws *(P1 — Implemented & Verified)*
 
-#### 5. `build_llm_context()` Sends 37-Day-Old Liquidity Pools Instead of Nearby Active Pools
-- **Location:** `app/pipeline.py:35` (`"pools": smc["liquidity_pools"][-5:]`)
-- **Mechanism:** `cluster_equal_levels()` (`app/smc/liquidity.py:39`) sorts `liquidity_pools` **ascending by price**, not chronologically or by distance to price. Taking `[-5:]` grabs the **5 highest-priced pools across the entire 7,258-bar history**. In the live `AUDCHF M15` analysis (`last_close = 0.5559`), `build_llm_context` sends 5 pools at `0.5855–0.5874` (~300 pips away, `last_index` `3600–3727` = **>3,500 bars / ~37 days old**), complete with raw internal `members` bar-index arrays.
-- **Fix:** Filter `smc["liquidity_pools"]` to active/un-swept pools within e.g. `±5 * atr` of `last_close` (or nearest 3 buyside + nearest 3 sellside pools), expressed with `distance_atr` and `age_bars`, and strip raw `members` arrays.
+#### 5. `build_llm_context()` Sent 37-Day-Old Liquidity Pools Instead of Nearby Active Pools *(FIXED)*
+- **Location:** `app/pipeline.py:34-70`
+- **Mechanism:** `cluster_equal_levels()` (`app/smc/liquidity.py:39`) sorts `liquidity_pools` ascending by price, so `[-5:]` sent the 5 highest-priced pools across the entire 7,258-bar history (~300 pips away, >3,500 bars old) along with raw `members` bar-index arrays.
+- **Fix Applied:** Added `_nearby_active_pools()` to filter `smc["liquidity_pools"]` to un-swept pools within `±5.0 * atr` of `last_close` (nearest 3 buyside + nearest 3 sellside), enriched with `distance_atr` and `age_bars` and stripped of raw `members` arrays.
 
-#### 6. Contradictory Dealing-Range Fields & Raw Unix Timestamps
-- **Location:** `app/pipeline.py:30-43`
-- **Mechanism:**
-  - `dealing_range.position` (`0.463`, `"discount"` in the live `AUDCHF` payload) measures **`last_close`**, whereas `setup.range_position` (`0.662`, `"entry in premium zone"`) measures the **limit `entry`**. Passing both unlabeled causes the LLM to see conflicting `"discount"` vs `"premium"` strings for the same setup.
-  - `last_events` and `recent_sweeps` include raw 10-digit Unix epochs (`1795176900`) and internal bar indices (`7211`, `7222`) without `n_bars`, making it impossible for the LLM to tell whether an event happened 2 bars ago or 90 bars ago unless it happens to be mentioned in `confluences`.
-- **Fix:** Rename `dealing_range.position` -> `close_range_position` and `setup.range_position` -> `entry_range_position`, and convert event/sweep timestamps to `bars_ago` integers.
+#### 6. Contradictory Dealing-Range Fields & Raw Unix Timestamps *(FIXED)*
+- **Location:** `app/pipeline.py:113-147`
+- **Mechanism:** `dealing_range.position` measured `last_close` while `setup.range_position` measured `entry`, and `last_events` / `recent_sweeps` passed raw Unix epochs and internal indices without `bars_ago`.
+- **Fix Applied:** Renamed `dealing_range.position` -> `close_range_position` (with `close_zone`) and `setup.range_position` -> `entry_range_position` (with `entry_zone_half`), replaced `origin_time`/`origin_index` with `zone_age_bars`, and converted event/sweep timestamps into `bars_ago` integers.
 
-#### 7. Missing High-Signal Context (`csm_dir`, `setup_kind`, ATR Distances, HTF Zones, Session)
-- **Location:** `app/pipeline.py:24-50`, `app/pipeline.py:378`
-- **Mechanism:**
-  - `csm_dir` (Currency Strength alignment) is never passed to `build_llm_context()` (and is completely absent when CSM **opposes** the trade).
-  - `setup_kind` (`"rejection"` vs OB/FVG zone retest) and rejection candle metrics (`exp`, `clv`, `depth`) are omitted.
-  - `entry_distance_atr` and `(abs(entry - stop_loss) / atr)` are omitted, forcing the LLM to do floating-point division in its head.
-  - `htf_context` strips out `zones` (`H1`/`H4` OBs/FVGs) and `buyside`/`sellside` pools, so the LLM cannot check whether TP runs straight into an opposing HTF order block.
-  - Note also that in Pass 2 (`app/pipeline.py:378`), if `len(df) < 250` fallback triggers, `htf_ctx` becomes `{}` even though `analysis["htf"]` was already saved in Pass 1.
-  - Session / UTC hour (`Asia` vs `London` vs `LDN/NY` vs `NY`) is omitted despite strong session win-rate differences.
+#### 7. Missing High-Signal Context (`csm_dir`, `setup_kind`, ATR Distances, HTF Zones, Session) *(FIXED)*
+- **Location:** `app/pipeline.py:24-32, 150-221`
+- **Mechanism:** `csm_dir`, `setup_kind` + rejection candle stats, ATR-normalized stop/TP/entry distances, HTF zones/pools, and UTC session were omitted from `build_llm_context()`.
+- **Fix Applied:** Added `csm` (`aligned_direction` + `aligned|opposed|neutral` status), `setup_kind` and `rejection` metrics (`bucket`, `exp`, `clv`, `depth`, `mode`), `entry_distance_atr`, `stop_distance_atr`, `tp_distance_atr`, `session` (`utc_hour` + session bucket from `formed_at`), and per-HTF `entry_vs_equilibrium`, `nearby_zones`, `nearest_buyside_atr`, and `nearest_sellside_atr`.
 
 #### 8. `llm.verdict` Is Requested and Paid For, Then Completely Ignored
 - **Location:** `app/ai/llm.py:22-26, 148`, `app/ai/hybrid.py:5-61`, `app/dashboard/static/index.html:1013-1022`
@@ -117,32 +110,22 @@ Querying `setups_history` (`668` setups) joined with `outcomes` (`478` resolved 
 
 ---
 
-### Medium — Performance, Caching & API Reliability
+### Medium — Performance, Caching & API Reliability *(P1 — Implemented & Verified)*
 
-#### 9. Redundant Full SMC + MTF Re-computation in Pass 2 (`enrich_analysis_llm`)
-- **Location:** `app/pipeline.py:363-378`
-- **Mechanism:** Pass 1 already computed `smc_mod.analyze(df)` and `build_htf_context(...)` and persisted `smc` and `htf` into `store.save_analysis(symbol, tf, payload)`. Pass 2 reloads candles from SQLite and re-runs the entire SMC + H1/H4 analysis from scratch just to build the LLM prompt.
-- **Fix:** Either reuse `analysis["smc"]` + `analysis["htf"]` directly in `enrich_analysis_llm` (storing slimmed HTF zones/pools in `analysis["htf"]`), or pass the in-memory `(smc, htf_ctx)` dict from Pass 1 to Pass 2.
+#### 9. Redundant Full SMC + MTF Re-computation in Pass 2 (`enrich_analysis_llm`) *(FIXED)*
+- **Location:** `app/pipeline.py:73-91, 368, 535-560`
+- **Mechanism:** Pass 1 already computed `smc` and `htf_ctx`, yet Pass 2 reloaded candles from SQLite and re-ran `smc_mod.analyze()` + `build_htf_context()`.
+- **Fix Applied:** Persisted slimmed HTF zones and liquidity levels via `_serialize_htf_for_storage(htf_ctx)` in `analysis["htf"]` during Pass 1, and updated `enrich_analysis_llm()` to reuse `analysis["smc"]` + `analysis["htf"]` + `store.load_csm()` directly (only falling back to candle reload for legacy rows lacking `atr`/`dealing_range`).
 
-#### 10. Incomplete `_cache_key` in `LLMAnalyzer`
-- **Location:** `app/ai/llm.py:119-127`
-- **Mechanism:** `_cache_key()` hashes only `(symbol, timeframe, direction, entry, stop_loss, take_profit, origin_time, len(confluences))`. It omits:
-  - `ml_win_probability` (a retrain or updated `symbol_recent_win_rate` changes the input prompt, yet returns the stale cached JSON)
-  - `market_structure.trend` and `htf_context` (an H1 bar close or M15 CHoCH within the 15-minute TTL changes the structural context)
-  - A `PROMPT_VERSION` hash (editing `SYSTEM_PROMPT` or `build_llm_context` still serves pre-edit cached responses).
-- **Fix:** Include `round(ml_prob, 3)`, `smc["trend"]`, quantized `last_close` (or `entry_distance_atr`), HTF trends, and a `PROMPT_VERSION` constant in `_cache_key`.
+#### 10. Incomplete `_cache_key` in `LLMAnalyzer` *(FIXED)*
+- **Location:** `app/ai/llm.py:36, 166-184`
+- **Mechanism:** `_cache_key()` ignored `ml_win_probability`, `market_structure.trend`, `htf_context`, `csm_dir`, `entry_distance_atr`, and prompt changes.
+- **Fix Applied:** Added `PROMPT_VERSION` (MD5 hash of `SYSTEM_PROMPT`) and included `pv`, `setup_kind`, rounded `ml_win_probability`, `market_structure.trend`, HTF trends, `csm.aligned_direction`, and quantized `entry_distance_atr` in `_cache_key()`.
 
-#### 11. Missing `response_format`, `max_tokens`, Connection Pooling, and Telemetry
-- **Location:** `app/ai/llm.py:81-117`
-- **Mechanism:**
-  - **No `response_format` or `max_tokens`:** Reasoning/chat models (`MiniMax-M3`) can emit `<think>...</think>` blocks or verbose prose, increasing latency toward the `15s` timeout. Furthermore, if `<think>` contains curly braces `{...}`, `text.find("{")` to `text.rfind("}")` in `_parse()` will fail `json.loads()`.
-  - **New TCP/TLS connection per call:** Uses module-level `requests.post(...)` instead of a persistent `requests.Session()` with connection pooling.
-  - **Zero telemetry:** No logging of API latency, HTTP status errors, timeouts, parse failures, or token usage (`usage.prompt_tokens` / `completion_tokens`).
-- **Fix:**
-  - Strip `<think>...</think>` before JSON extraction in `_parse()`.
-  - Pass `"max_tokens": int(self.cfg.get("max_tokens", 450))` and optional `"response_format": {"type": "json_object"}` (configurable via `ai.llm.json_mode: true`, as some local Ollama/LM Studio models prefer `json_object` or grammar).
-  - Use a shared `requests.Session()` with `HTTPAdapter(pool_connections=8, pool_maxsize=8)`.
-  - Track and log counters (`calls`, `cache_hits`, `timeouts`, `http_errors`, `parse_errors`, `avg_latency_ms`) and expose them in `/api/status` or `/api/meta`.
+#### 11. Missing `response_format`, `max_tokens`, Connection Pooling, and Telemetry *(FIXED)*
+- **Location:** `app/ai/llm.py:39-165, 187-194`, `app/dashboard/server.py:755-761`, `config.yaml:143`, `app/config.py:73-74`
+- **Mechanism:** No `<think>` stripping before JSON extraction, no `max_tokens` or `json_mode`, unpooled `requests.post` calls, and no latency/error/token telemetry.
+- **Fix Applied:** Added `<think>...</think>` stripping in `_parse()`, persistent `requests.Session` with `HTTPAdapter(pool_connections=8, pool_maxsize=8)`, configurable `max_tokens` (`450`) and `json_mode` (`False`), thread-safe `LLMAnalyzer.stats()` counters (`calls`, `succeeded`, `cache_hits_mem`, `cache_hits_db`, `timeouts`, `http_errors`, `parse_errors`, `avg_latency_ms`, `prompt_tokens`, `completion_tokens`), and exposed `llm` stats on `GET /api/status`.
 
 #### 12. Minor UI & Maintenance Drift
 - **Silent LLM failure in UI (`app/dashboard/static/index.html:999-1006`):** `aiBoxHtml()` explains why the LLM was skipped when `ml_prob < gate`, but renders nothing when `ml_prob >= gate` and the LLM call timed out or failed (`score_source == "ml"`). Showing a muted notice (`"AI analyst unavailable (timeout/error) — scored by ML only"`) makes failures visible.
@@ -183,14 +166,15 @@ Right now, the LLM is used as a **0–100 numeric probability estimator** blende
 | **P0** | **DONE** | Add `payload=?` to `UPDATE setups_history` in `append_setups()` | `app/data/store.py` | Stops Pass-2 corruption of historical `llm_score`, `aligned`, and `score_source` |
 | **P0** | **DONE** | Skip `meta.llm_pending == True` setups in `ExecutionEngine._candidates()` (with 45s timeout guard) | `app/execution/executor.py` | Prevents live orders firing on Pass-1 scores before Pass-2 LLM review completes |
 | **P0** | **DONE** | Align `ai.llm.min_ml_prob` (`0.40 -> 0.41`) with `execution.min_ml_prob`, ensure `llm_cache` table + index exist, and log cache/API errors | `config.yaml`, `app/config.py`, `app/data/store.py`, `app/ai/llm.py` | Eliminates dashboard `BUY` vs executor skip mismatch & restores observable cross-worker SQLite caching |
-| **P1** | Planned | Fix `build_llm_context()`: filter `liquidity_pools` to nearest active pools within `±5 ATR`, label `close_range_position` vs `entry_range_position`, convert timestamps to `bars_ago`, add `csm_dir`, `setup_kind`, `stop_distance_atr`, `entry_distance_atr`, HTF zones/pools, and UTC session | `app/pipeline.py` | Cuts prompt noise/tokens while giving the LLM accurate spatial & MTF context |
-| **P1** | Planned | Reuse Pass-1 `smc` + `htf` in `enrich_analysis_llm()` instead of re-running `smc_mod.analyze()` | `app/pipeline.py` | Eliminates redundant CPU work during Pass-2 bar-close enrichment |
-| **P1** | Planned | Harden `LLMAnalyzer`: `requests.Session` pooling, `<think>` stripping, `max_tokens`, optional `response_format`, expanded `_cache_key` (`ml_prob`, `trend`, `PROMPT_VERSION`), and error/latency logging | `app/ai/llm.py` | Faster bar-close bursts, fewer parse/timeout failures, and full observability |
+| **P1** | **DONE** | Fix `build_llm_context()`: filter `liquidity_pools` to nearest active pools within `±5 ATR`, label `close_range_position` vs `entry_range_position`, convert timestamps to `bars_ago`, add `csm_dir`, `setup_kind`, `stop_distance_atr`, `entry_distance_atr`, HTF zones/pools, and UTC session | `app/pipeline.py` | Cuts prompt noise/tokens (`2,794 -> 2,020` chars on `AUDCHF`) while giving accurate spatial & MTF context |
+| **P1** | **DONE** | Reuse Pass-1 `smc` + `htf` in `enrich_analysis_llm()` instead of re-running `smc_mod.analyze()` | `app/pipeline.py` | Eliminates redundant SQLite candle loads & SMC/MTF recomputation during Pass-2 enrichment |
+| **P1** | **DONE** | Harden `LLMAnalyzer`: `requests.Session` pooling, `<think>` stripping, `max_tokens`, optional `json_mode`, expanded `_cache_key` (`ml_prob`, `trend`, `PROMPT_VERSION`), and telemetry exposed on `/api/status` | `app/ai/llm.py`, `app/dashboard/server.py`, `config.yaml`, `app/config.py` | Faster bar-close bursts, resilient JSON parsing, and full latency/token/error observability |
 | **P2** | Planned | Replace raw `0–100` `llm.confidence` linear blend with bounded `score_adjustment` (`[-8, +5]`) or centered residual, and remove unused `llm.verdict` | `app/ai/llm.py`, `app/ai/hybrid.py`, `config.yaml` | Fixes ROC-AUC degradation (`0.4699 -> >=0.504`) and stops suppressing valid ML setups |
 | **P2** | Planned | Update UI fallback message when LLM fails, fix stale `-20` / `0.4` strings in `insights.py`, and update `docs/hybrid-fusion.md` | `app/dashboard/static/index.html`, `app/engine/insights.py`, `docs/hybrid-fusion.md` | Transparent UI diagnostics and accurate documentation |
 
-### P0 Verification Log
-- `scripts/smoke_execution.py` passed (`exit 0`).
-- Verified `store.append_setups()` updates `setups_history.payload` (`score_source`, `llm_score`, `aligned`) alongside `verdict` and `score` on Pass-2 re-save.
-- Verified `ExecutionEngine._candidates()` defers analyses with `meta.llm_pending == True` within `45s` and releases them once `llm_pending` becomes `False` (or after the `45s` safety timeout).
-- Verified `llm_cache` table and `idx_llm_cache_created` exist in `data/trader.db`, and `ai.llm.min_ml_prob == execution.min_ml_prob == 0.41`.
+### Verification Log (P0 & P1)
+- **P0:** `scripts/smoke_execution.py` passed (`exit 0`); verified `store.append_setups()` updates `payload` on Pass-2 re-save; verified `ExecutionEngine._candidates()` defers `meta.llm_pending == True` for up to `45s`; verified `llm_cache` + `idx_llm_cache_created` in `data/trader.db` and `min_ml_prob == 0.41`.
+- **P1:** `scripts/smoke_execution.py` and `scripts/smoke_telegram.py` passed (`exit 0`).
+- **P1 Context (`app/pipeline.py`):** Verified `build_llm_context()` on live `AUDCHF M15` drops 37-day-old pools (`2,794 -> 2,020` chars), emits `close_range_position` vs `entry_range_position`, `bars_ago` on events/sweeps, `stop_distance_atr` (`5.99`), `tp_distance_atr` (`9.14`), `entry_distance_atr` (`0.76`), `csm` alignment, and `session`.
+- **P1 Pass-2 Reuse (`app/pipeline.py`):** Verified `enrich_analysis_llm()` completes Pass-2 enrichment using stored Pass-1 `smc` + `htf` with zero candle queries.
+- **P1 Client Hardening (`app/ai/llm.py`, `app/dashboard/server.py`):** Verified `<think>{...}</think>` stripping, distinct `_cache_key` hashes across `ml_win_probability` / `trend` / `PROMPT_VERSION`, and `LLMAnalyzer.stats()` telemetry.

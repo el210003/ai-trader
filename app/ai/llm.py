@@ -3,9 +3,11 @@ import hashlib
 import json
 import os
 import re
+import threading
 import time
 
 import requests
+from requests.adapters import HTTPAdapter
 
 from ..logsetup import debug
 
@@ -32,6 +34,8 @@ Respond with ONLY a JSON object (no markdown, no prose) using exactly this schem
 verdict meaning: BUY = take the long setup, SELL = take the short setup,
 WAIT = setup lacks quality, AVOID = the trade goes against your read."""
 
+PROMPT_VERSION = hashlib.md5(SYSTEM_PROMPT.encode("utf-8")).hexdigest()[:8]
+
 
 class LLMAnalyzer:
     def __init__(self, cfg: dict, store=None):
@@ -44,6 +48,37 @@ class LLMAnalyzer:
         self._cache = {}   # key -> (timestamp, response dict)
         self._store = store
         self._cache_err_logged = False
+        self._stats_lock = threading.Lock()
+        self._stats = {
+            "calls": 0,
+            "succeeded": 0,
+            "cache_hits_mem": 0,
+            "cache_hits_db": 0,
+            "timeouts": 0,
+            "http_errors": 0,
+            "parse_errors": 0,
+            "total_latency_ms": 0,
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+        }
+        self._session = requests.Session()
+        adapter = HTTPAdapter(pool_connections=8, pool_maxsize=8)
+        self._session.mount("http://", adapter)
+        self._session.mount("https://", adapter)
+
+    def _bump(self, **increments):
+        with self._stats_lock:
+            for k, v in increments.items():
+                self._stats[k] = self._stats.get(k, 0) + v
+
+    def stats(self) -> dict:
+        with self._stats_lock:
+            s = dict(self._stats)
+        calls = s["calls"]
+        s["avg_latency_ms"] = round(s["total_latency_ms"] / calls, 1) if calls else 0.0
+        s["model"] = self.model if self.usable else None
+        s["prompt_version"] = PROMPT_VERSION
+        return s
 
     @property
     def has_key(self) -> bool:
@@ -71,6 +106,7 @@ class LLMAnalyzer:
             if key in self._cache:
                 ts, resp = self._cache[key]
                 if time.time() - ts <= ttl:
+                    self._bump(cache_hits_mem=1)
                     out = dict(resp)
                     out["_cached"] = True
                     return out
@@ -79,6 +115,7 @@ class LLMAnalyzer:
                     db_resp = self._store.get_llm_cache(key, self.model, ttl)
                     if db_resp:
                         self._cache[key] = (time.time(), db_resp)
+                        self._bump(cache_hits_db=1)
                         out = dict(db_resp)
                         out["_cached"] = True
                         return out
@@ -98,13 +135,29 @@ class LLMAnalyzer:
                 {"role": "user", "content": json.dumps(context, default=str)},
             ],
         }
+        max_tokens = int(self.cfg.get("max_tokens", 450) or 0)
+        if max_tokens > 0:
+            body["max_tokens"] = max_tokens
+        if self.cfg.get("json_mode", False):
+            body["response_format"] = {"type": "json_object"}
+        t0 = time.time()
+        self._bump(calls=1)
         try:
-            resp = requests.post(f"{self.base_url}/chat/completions",
-                                 headers=headers, json=body, timeout=self.timeout)
+            resp = self._session.post(f"{self.base_url}/chat/completions",
+                                      headers=headers, json=body, timeout=self.timeout)
             resp.raise_for_status()
-            content = resp.json()["choices"][0]["message"]["content"]
+            payload = resp.json()
+            usage = payload.get("usage") or {}
+            content = payload["choices"][0]["message"]["content"]
             parsed = self._parse(content)
+            lat_ms = int((time.time() - t0) * 1000)
+            self._bump(
+                total_latency_ms=lat_ms,
+                prompt_tokens=int(usage.get("prompt_tokens") or 0),
+                completion_tokens=int(usage.get("completion_tokens") or 0),
+            )
             if parsed:
+                self._bump(succeeded=1)
                 parsed["model"] = self.model
                 self._cache[key] = (time.time(), parsed)
                 if len(self._cache) > 256:   # keep the cache bounded
@@ -119,27 +172,49 @@ class LLMAnalyzer:
                             self._cache_err_logged = True
                             debug(f"[llm] sqlite cache write failed: {e}")
             else:
-                debug(f"[llm] unparseable response from {self.model}: {str(content)[:160]!r}")
+                self._bump(parse_errors=1)
+                debug(f"[llm] unparseable response from {self.model} ({lat_ms}ms): {str(content)[:160]!r}")
             return parsed
+        except requests.exceptions.Timeout as e:
+            self._bump(timeouts=1, total_latency_ms=int((time.time() - t0) * 1000))
+            debug(f"[llm] timeout ({self.model}, {self.timeout}s): {e}")
+            return None
         except Exception as e:
+            self._bump(http_errors=1, total_latency_ms=int((time.time() - t0) * 1000))
             debug(f"[llm] request failed ({self.model}): {e}")
             return None
 
     def _cache_key(self, context: dict) -> str:
         s = context.get("setup", {})
+        ez = s.get("entry_zone") or {}
+        ms = context.get("market_structure") or {}
+        htf = context.get("htf_context") or {}
+        mp = context.get("ml_win_probability")
+        ed = s.get("entry_distance_atr")
         raw = json.dumps({
+            "pv": PROMPT_VERSION,
             "s": context.get("symbol"), "t": context.get("timeframe"),
-            "d": s.get("direction"), "e": s.get("entry"),
-            "sl": s.get("stop_loss"), "tp": s.get("take_profit"),
-            "z": (s.get("entry_zone") or {}).get("origin_time"),
+            "d": s.get("direction"), "k": s.get("setup_kind", "zone"),
+            "e": s.get("entry"), "sl": s.get("stop_loss"), "tp": s.get("take_profit"),
+            "z": ez.get("origin_time") if ez.get("origin_time") is not None else ez.get("zone_age_bars"),
             "n": len(s.get("confluences", [])),
+            "ml": round(float(mp), 3) if mp is not None else None,
+            "tr": ms.get("trend"),
+            "htf": {k: v.get("trend") for k, v in htf.items() if isinstance(v, dict)},
+            "csm": (context.get("csm") or {}).get("aligned_direction"),
+            "ed": round(float(ed), 1) if ed is not None else None,
         }, sort_keys=True, default=str)
         return hashlib.md5(raw.encode()).hexdigest()
 
     @staticmethod
     def _parse(text: str):
-        # strip markdown fences, extract the outermost JSON object
-        text = re.sub(r"```(?:json)?", "", text or "").strip()
+        # strip <think>...</think> blocks and markdown fences, extract outermost JSON
+        text = re.sub(r"<think>.*?</think>", "", text or "", flags=re.DOTALL | re.IGNORECASE)
+        if "<think>" in text.lower():
+            idx_brace = text.find("{")
+            if idx_brace != -1:
+                text = text[idx_brace:]
+        text = re.sub(r"```(?:json)?", "", text).strip()
         start, end = text.find("{"), text.rfind("}")
         if start == -1 or end <= start:
             return None

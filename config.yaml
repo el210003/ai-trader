@@ -140,6 +140,7 @@ ai:
     # reuse the SQLite-backed cached narrative across workers & bar closes):
     min_ml_prob: 0.41        # skip LLM when ML win-probability < 41% (aligned with execution.min_ml_prob)
     cache_ttl: 900           # reuse cached LLM narrative for 15 min
+    max_tokens: 450          # cap output length to keep latency bounded
   hybrid:
     ml_weight: 0.75          # weight of ML win-probability in final score
     llm_weight: 0.25         # weight of LLM confidence in final score

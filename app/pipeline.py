@@ -21,32 +21,221 @@ from .ai.hybrid import fuse
 from .util import jsonable
 
 
-def build_llm_context(setup: dict, smc: dict, htf_ctx: dict = None) -> dict:
+def _session_info(formed_at) -> dict:
+    if not formed_at:
+        return None
+    hr = time.gmtime(int(formed_at)).tm_hour
+    name = (
+        "Asia" if hr < 7 else
+        "London" if hr < 12 else
+        "LDN_NY_overlap" if hr < 16 else
+        "NY" if hr < 20 else
+        "Late_NY"
+    )
+    return {"utc_hour": hr, "name": name}
+
+
+def _nearby_active_pools(pools: list, sweeps: list, last_close: float,
+                         atr_v: float, last_bar_idx: int) -> list:
+    if not pools:
+        return []
+    atr_safe = atr_v if atr_v > 0 else 1e-9
+    tol = max(1e-8, abs(last_close) * 0.0006)
+    pool_sweeps = [
+        sw for sw in (sweeps or [])
+        if sw.get("kind") in ("equal_highs", "equal_lows")
+    ]
+    buyside, sellside = [], []
+    for p in pools:
+        price = float(p.get("price") or 0.0)
+        if atr_v > 0 and abs(price - last_close) > 5.0 * atr_safe:
+            continue
+        ready = int(p.get("last_confirmed_at", p.get("last_index", 0)) or 0)
+        if any(
+            sw.get("side") == p.get("side")
+            and int(sw.get("index", 0) or 0) >= ready
+            and abs(float(sw.get("level") or 0.0) - price) <= tol
+            for sw in pool_sweeps
+        ):
+            continue
+        item = {
+            "side": p.get("side"),
+            "price": price,
+            "touches": p.get("touches"),
+            "distance_atr": round((price - last_close) / atr_safe, 2) if atr_v > 0 else None,
+            "age_bars": max(0, last_bar_idx - int(p["last_index"]))
+            if last_bar_idx > 0 and p.get("last_index") is not None else None,
+        }
+        if p.get("side") == "buyside":
+            buyside.append((abs(price - last_close), item))
+        else:
+            sellside.append((abs(price - last_close), item))
+    buyside.sort(key=lambda t: t[0])
+    sellside.sort(key=lambda t: t[0])
+    return [x[1] for x in buyside[:3]] + [x[1] for x in sellside[:3]]
+
+
+def _serialize_htf_for_storage(htf_ctx: dict) -> dict:
+    """Compact HTF payload stored in analysis['htf'] so Pass 2 can reuse it
+    without re-running SMC/MTF analysis."""
+    out = {}
+    for htf, c in (htf_ctx or {}).items():
+        zones = c.get("zones_list") if isinstance(c.get("zones_list"), list) else (
+            c.get("zones") if isinstance(c.get("zones"), list) else []
+        )
+        out[htf] = {
+            "trend": c.get("trend"),
+            "equilibrium": c.get("equilibrium"),
+            "zones": len(zones),
+            "pools": len(c.get("buyside", [])) + len(c.get("sellside", [])),
+            "zones_list": [
+                {"type": z.get("type"), "direction": z.get("direction"),
+                 "top": float(z["top"]), "bottom": float(z["bottom"])}
+                for z in zones[:12]
+            ],
+            "buyside": [float(x) for x in (c.get("buyside") or [])[:8]],
+            "sellside": [float(x) for x in (c.get("sellside") or [])[:8]],
+        }
+    return out
+
+
+def build_llm_context(setup: dict, smc: dict, htf_ctx: dict = None,
+                      csm_dir: str = None) -> dict:
+    smc = smc or {}
+    atr_v = float(smc.get("atr") or setup.get("atr") or 0.0)
+    atr_safe = atr_v if atr_v > 0 else 1e-9
+    last_close = float(smc.get("last_close") or setup.get("last_close") or setup.get("entry") or 0.0)
+    n_bars = int(smc.get("n_bars") or 0)
+    last_bar_idx = (n_bars - 1) if n_bars > 0 else int(setup.get("formed_index") or 0)
+
+    events = []
+    for e in (smc.get("events") or [])[-3:]:
+        events.append({
+            "type": e.get("type"),
+            "direction": e.get("direction"),
+            "level": e.get("level"),
+            "bars_ago": max(0, last_bar_idx - int(e["index"]))
+            if last_bar_idx > 0 and e.get("index") is not None else None,
+        })
+
+    sweeps = []
+    for sw in (smc.get("sweeps") or [])[-4:]:
+        sweeps.append({
+            "side": sw.get("side"),
+            "kind": sw.get("kind"),
+            "level": sw.get("level"),
+            "bars_ago": max(0, last_bar_idx - int(sw["index"]))
+            if last_bar_idx > 0 and sw.get("index") is not None else None,
+        })
+
+    dr = smc.get("dealing_range") or {}
+    dealing_range_ctx = {
+        "top": dr.get("top"),
+        "bottom": dr.get("bottom"),
+        "equilibrium": dr.get("equilibrium"),
+        "close_range_position": round(float(dr["position"]), 3) if dr.get("position") is not None else None,
+        "close_zone": dr.get("zone"),
+    }
+
+    direction = setup.get("direction")
+    entry = float(setup.get("entry") or 0.0)
+    sl = float(setup.get("stop_loss") or 0.0)
+    tp = float(setup.get("take_profit") or 0.0)
+    entry_rpos = setup.get("range_position")
+    entry_half = (
+        ("discount" if float(entry_rpos) < 0.5 else "premium" if float(entry_rpos) > 0.5 else "equilibrium")
+        if entry_rpos is not None else None
+    )
+    ez = setup.get("entry_zone") or {}
+    ez_ctx = {
+        "type": ez.get("type"),
+        "top": ez.get("top"),
+        "bottom": ez.get("bottom"),
+        "zone_age_bars": max(0, last_bar_idx - int(ez["origin_index"]))
+        if last_bar_idx > 0 and ez.get("origin_index") is not None else None,
+    }
+    entry_dist_atr = (
+        setup["entry_distance_atr"] if setup.get("entry_distance_atr") is not None
+        else (round(abs(last_close - entry) / atr_safe, 2) if atr_v > 0 else None)
+    )
+    setup_ctx = {
+        "direction": direction,
+        "setup_kind": setup.get("setup_kind", "zone"),
+        "entry": entry,
+        "stop_loss": sl,
+        "take_profit": tp,
+        "rr": setup.get("rr"),
+        "entry_distance_atr": entry_dist_atr,
+        "stop_distance_atr": round(abs(entry - sl) / atr_safe, 2) if atr_v > 0 else None,
+        "tp_distance_atr": round(abs(tp - entry) / atr_safe, 2) if atr_v > 0 else None,
+        "entry_zone": ez_ctx,
+        "entry_range_position": entry_rpos,
+        "entry_zone_half": entry_half,
+        "confluences": setup.get("confluences", []),
+    }
+    if setup.get("rejection"):
+        rej = setup["rejection"]
+        setup_ctx["rejection"] = {
+            k: rej.get(k) for k in ("bucket", "exp", "clv", "depth", "mode")
+        }
+
+    csm_status = (
+        "aligned" if csm_dir == direction
+        else ("opposed" if csm_dir in ("long", "short") else "neutral")
+    )
     ctx = {
         "task": "Evaluate this SMC trade setup. Respond with the JSON schema from your instructions.",
         "symbol": setup["symbol"],
         "timeframe": setup["tf"],
         "market_structure": {
-            "trend": smc["trend"],
-            "last_events": smc["events"][-3:],
+            "trend": smc.get("trend"),
+            "last_events": events,
         },
         "liquidity": {
-            "recent_sweeps": smc["sweeps"][-4:],
-            "pools": smc["liquidity_pools"][-5:],
+            "recent_sweeps": sweeps,
+            "pools": _nearby_active_pools(
+                smc.get("liquidity_pools"), smc.get("sweeps"), last_close, atr_v, last_bar_idx
+            ),
         },
-        "dealing_range": smc["dealing_range"],
-        "setup": {k: setup[k] for k in
-                  ("direction", "entry", "stop_loss", "take_profit", "rr",
-                   "entry_zone", "range_position", "confluences")},
+        "dealing_range": dealing_range_ctx,
+        "setup": setup_ctx,
+        "csm": {"aligned_direction": csm_dir, "status": csm_status},
         "ml_win_probability": setup.get("ml_prob"),
-        "atr": smc["atr"],
-        "last_close": smc["last_close"],
+        "atr": smc.get("atr"),
+        "last_close": smc.get("last_close"),
     }
+    sess = _session_info(setup.get("formed_at"))
+    if sess:
+        ctx["session"] = sess
     if htf_ctx:
-        ctx["htf_context"] = {
-            htf: {"trend": c.get("trend"), "equilibrium": c.get("equilibrium")}
-            for htf, c in htf_ctx.items()
-        }
+        htf_out = {}
+        lo_path, hi_path = min(entry, tp), max(entry, tp)
+        for htf, c in htf_ctx.items():
+            eq = c.get("equilibrium")
+            entry_ctx = {
+                "trend": c.get("trend"),
+                "equilibrium": eq,
+                "entry_vs_equilibrium": ("discount" if entry <= float(eq) else "premium") if eq is not None else None,
+            }
+            raw_zones = c.get("zones_list") if isinstance(c.get("zones_list"), list) else (
+                c.get("zones") if isinstance(c.get("zones"), list) else []
+            )
+            if raw_zones and atr_v > 0:
+                near_z = [
+                    z for z in raw_zones
+                    if float(z.get("bottom", 0)) <= hi_path + 3.0 * atr_safe
+                    and float(z.get("top", 0)) >= lo_path - 3.0 * atr_safe
+                ]
+                if near_z:
+                    entry_ctx["nearby_zones"] = near_z[:4]
+            buyside = [float(p) for p in (c.get("buyside") or []) if float(p) > entry]
+            sellside = [float(p) for p in (c.get("sellside") or []) if float(p) < entry]
+            if atr_v > 0 and buyside:
+                entry_ctx["nearest_buyside_atr"] = round((min(buyside) - entry) / atr_safe, 2)
+            if atr_v > 0 and sellside:
+                entry_ctx["nearest_sellside_atr"] = round((entry - max(sellside)) / atr_safe, 2)
+            htf_out[htf] = entry_ctx
+        ctx["htf_context"] = htf_out
     return ctx
 
 
@@ -158,7 +347,7 @@ def analyze_symbol(store: Store, symbol: str, tf: str, cfg: dict,
             if skip_llm:
                 llm_pending = True
             else:
-                contexts = [build_llm_context(s, smc, htf_ctx) for s in to_call]
+                contexts = [build_llm_context(s, smc, htf_ctx, csm_dir=csm_dir) for s in to_call]
                 if len(to_call) == 1:
                     to_call[0]["llm"] = llm.analyze_setup(contexts[0])
                 else:
@@ -192,11 +381,7 @@ def analyze_symbol(store: Store, symbol: str, tf: str, cfg: dict,
             "last_close": smc["last_close"],
             "swings": smc["swings"][-40:],
         },
-        "htf": {htf: {"trend": c.get("trend"),
-                      "equilibrium": c.get("equilibrium"),
-                      "zones": len(c.get("zones", [])),
-                      "pools": len(c.get("buyside", [])) + len(c.get("sellside", []))}
-                for htf, c in htf_ctx.items()},
+        "htf": _serialize_htf_for_storage(htf_ctx),
         "setups": chosen,
     }
     payload = jsonable(analysis)
@@ -360,24 +545,28 @@ def enrich_analysis_llm(store: Store, symbol: str, tf: str, cfg: dict,
             store.save_analysis(symbol, tf, jsonable(analysis))
         return {"symbol": symbol, "tf": tf, "ok": True, "llm_calls": 0, "llm_cached": 0}
 
-    df = store.load_candles(symbol, tf)
-    if df is not None and len(df) >= 250:
-        df = df.reset_index(drop=True)
-        if drop_last_bar:
-            df = df.iloc[:-1]
-        smc = smc_mod.analyze(df, cfg["smc"])
-        mtf_cfg = cfg.get("mtf", {})
-        htf_ctx = (
-            build_htf_context(symbol, tf, cfg,
-                              up_to_time=int(df["time"].iat[-1]),
-                              load_df=store.load_candles)
-            if mtf_cfg.get("enabled", True) else {}
-        )
-    else:
-        smc = analysis.get("smc") or {}
-        htf_ctx = {}
+    smc = dict(analysis.get("smc") or {})
+    smc.setdefault("n_bars", (analysis.get("meta") or {}).get("bars", 0))
+    htf_ctx = analysis.get("htf") or {}
+    # Fallback only when stored analysis lacks SMC summary fields (legacy rows)
+    if not smc.get("atr") or not smc.get("dealing_range"):
+        df = store.load_candles(symbol, tf)
+        if df is not None and len(df) >= 250:
+            df = df.reset_index(drop=True)
+            if drop_last_bar:
+                df = df.iloc[:-1]
+            smc = smc_mod.analyze(df, cfg["smc"])
+            mtf_cfg = cfg.get("mtf", {})
+            htf_ctx = (
+                build_htf_context(symbol, tf, cfg,
+                                  up_to_time=int(df["time"].iat[-1]),
+                                  load_df=store.load_candles)
+                if mtf_cfg.get("enabled", True) else {}
+            )
 
-    contexts = [build_llm_context(s, smc, htf_ctx) for s in to_call]
+    csm = store.load_csm()
+    csm_dir = ((csm.get("aligned") or {}).get(symbol)) if csm else None
+    contexts = [build_llm_context(s, smc, htf_ctx, csm_dir=csm_dir) for s in to_call]
     if len(to_call) == 1:
         to_call[0]["llm"] = llm.analyze_setup(contexts[0])
     else:

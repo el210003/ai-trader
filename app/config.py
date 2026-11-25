@@ -70,6 +70,8 @@ DEFAULTS = {
             "timeout": 15,
             "min_ml_prob": 0.41,      # skip the LLM when ML win-prob is below this
             "cache_ttl": 900,         # identical setups reuse the LLM answer for N seconds
+            "max_tokens": 450,        # cap output length to prevent runaway reasoning latency
+            "json_mode": False,       # set True if provider supports response_format=json_object
         },
         "hybrid": {
             "ml_weight": 0.75,

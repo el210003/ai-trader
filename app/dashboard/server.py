@@ -754,9 +754,11 @@ def create_app(cfg: dict) -> FastAPI:
 
     @app.get("/api/status")
     def status():
-        return {k: state[k] for k in ("running", "retraining", "last_run",
-                                      "last_retrain", "last_error", "demo_mode",
-                                      "last_pull", "last_analysis")}
+        out = {k: state[k] for k in ("running", "retraining", "last_run",
+                                     "last_retrain", "last_error", "demo_mode",
+                                     "last_pull", "last_analysis")}
+        out["llm"] = llm.stats()
+        return out
 
     # ---------------------------------------------------------- execution
     @app.get("/api/execution/status")
