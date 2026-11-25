@@ -137,11 +137,13 @@ class LLMAnalyzer:
                 {"role": "user", "content": json.dumps(context, default=str)},
             ],
         }
-        max_tokens = int(self.cfg.get("max_tokens", 450) or 0)
+        max_tokens = int(self.cfg.get("max_tokens", 2048) or 0)
         if max_tokens > 0:
             body["max_tokens"] = max_tokens
         if self.cfg.get("json_mode", False):
             body["response_format"] = {"type": "json_object"}
+        if self.cfg.get("reasoning_split", False):
+            body["reasoning_split"] = True
         t0 = time.time()
         self._bump(calls=1)
         try:
@@ -150,7 +152,9 @@ class LLMAnalyzer:
             resp.raise_for_status()
             payload = resp.json()
             usage = payload.get("usage") or {}
-            content = payload["choices"][0]["message"]["content"]
+            choice = payload["choices"][0]
+            finish_reason = choice.get("finish_reason")
+            content = (choice.get("message") or {}).get("content") or ""
             parsed = self._parse(content)
             lat_ms = int((time.time() - t0) * 1000)
             self._bump(
@@ -175,7 +179,10 @@ class LLMAnalyzer:
                             debug(f"[llm] sqlite cache write failed: {e}")
             else:
                 self._bump(parse_errors=1)
-                debug(f"[llm] unparseable response from {self.model} ({lat_ms}ms): {str(content)[:160]!r}")
+                if finish_reason == "length" and "<think>" in content.lower() and "</think>" not in content.lower():
+                    debug(f"[llm] truncated inside <think> at max_tokens={max_tokens} from {self.model} ({lat_ms}ms) -- increase ai.llm.max_tokens")
+                else:
+                    debug(f"[llm] unparseable response from {self.model} ({lat_ms}ms, finish={finish_reason}): {content[:160]!r}")
             return parsed
         except requests.exceptions.Timeout as e:
             self._bump(timeouts=1, total_latency_ms=int((time.time() - t0) * 1000))

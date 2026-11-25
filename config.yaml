@@ -132,15 +132,15 @@ ai:
     #   LM Studio: http://localhost:1234/v1         model: (loaded model)
     base_url: https://api.minimax.io/v1 
     api_key_env: MINIMAX_API_KEY
-    model : MiniMax-M3
+    model: MiniMax-M2.7-highspeed
     temperature: 0.2
-    timeout: 15
+    timeout: 20
     # Speed controls for bar-close bursts (LLM calls only happen for setups
     # whose ML win-probability clears the gate; identical setups within the TTL
     # reuse the SQLite-backed cached narrative across workers & bar closes):
     min_ml_prob: 0.41        # skip LLM when ML win-probability < 41% (aligned with execution.min_ml_prob)
     cache_ttl: 900           # reuse cached LLM narrative for 15 min
-    max_tokens: 450          # cap output length to keep latency bounded
+    max_tokens: 2048         # enough headroom for reasoning (<think>) + JSON output
   hybrid:
     ml_weight: 0.75          # legacy weight when historical LLM confidence is present
     llm_weight: 0.25         # legacy weight when historical LLM confidence is present

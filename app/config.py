@@ -67,10 +67,10 @@ DEFAULTS = {
             "api_key_env": "OPENAI_API_KEY",
             "model": "gpt-4o-mini",
             "temperature": 0.2,
-            "timeout": 15,
+            "timeout": 20,
             "min_ml_prob": 0.41,      # skip the LLM when ML win-prob is below this
             "cache_ttl": 900,         # identical setups reuse the LLM answer for N seconds
-            "max_tokens": 450,        # cap output length to prevent runaway reasoning latency
+            "max_tokens": 2048,       # headroom for reasoning (<think>) + JSON output
             "json_mode": False,       # set True if provider supports response_format=json_object
         },
         "hybrid": {
