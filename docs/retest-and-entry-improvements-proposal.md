@@ -1,13 +1,14 @@
 # Proposal: Solving the "Perpetual Retest Wait" & Expanding Actionable Entry Families
 
-> **REVIEW STATUS (2026-11-25):** This document was written from a first-pass reading of
-> the builder and the journal. A subsequent audit against the live DB, the ML training
-> path, and the executor found **several claims in §2 that do not survive verification**,
-> and **one defect that invalidates the premise of Proposal 5**. See
-> **[§6 — Review Findings](#6-review-findings-verified)** for the corrections, and
-> **[§7 — Revised Recommendation](#7-revised-recommendation-what-to-actually-do)** for the
-> plan that replaces §5. Sections §1–§5 are retained unchanged as the original draft so the
-> reasoning trail stays visible.
+> **REVIEW STATUS (2026-11-26 — FINAL):** This document preserves the full three-pass
+> evolution of the proposal:
+> - **§1–§5:** Original draft (retained unchanged as the initial hypothesis).
+> - **§6–§7:** Internal code & DB self-audit (2026-11-25), catching the `id = 2132` regime
+>   split, the `entry_valid_bars` dual-semantics bug, and the fill-buffer skew.
+> - **§8:** Independent 3rd-party verification (2026-11-26), confirming §6 and correcting
+>   two remaining flaws in §6.6 (`D1`) and §7.2 `B2` (`D2`).
+> - **[§9 — Final Reconciled Plan](#9-final-reconciled-plan-active-execution-spec-2026-11-26):**
+>   The authoritative execution spec incorporating all §6–§8 corrections.
 
 ---
 
@@ -552,3 +553,76 @@ code- and DB-level verification almost line-for-line — §6.2's regime split an
 expectancy figures are exact to the third decimal. Two corrections are required before
 execution: the §6.6 mechanism claim (D1) and the §7.2 B2 evidence (D2). Neither changes
 the Phase-A ordering; both change what its first work items must contain.
+
+---
+
+## 9. Final Reconciled Plan (Active Execution Spec, 2026-11-26)
+
+This section reconciles the original draft (**§1–§5**), the internal audit (**§6–§7**),
+and the 3rd-party review (**§8**) into a single execution plan. All discrepancies (`D1`,
+`D2`, `D3`) and sequencing dependencies from **§8.2–§8.3** are resolved below.
+
+### 9.1 Cross-Pass Comparison & Final Disposition
+
+| Topic | Original Draft (§1–§5) | 2nd-Pass Audit (§6–§7) | 3rd-Party Review (§8) | Final Decision |
+|---|---|---|---|---|
+| **Retest Window & Distance Cap (Draft P1)** | Cut `max_entry_distance_atr` `1.0 → 0.55`; cut `entry_valid_bars` `24 → 6/8`; add 60% TP early invalidation | **Reject:** `> 0.55 ATR` is `+0.322R` (`n=72`) in new regime; `entry_valid_bars: 12` already hurt (`aa3834c`) | **Agree**, and note `entry_valid_bars` was confounded because `store.py` never persisted it | **Drop P1.** Split zone-age vs. fill-window first (`A2`), persist keys (`A1`), then test 60% early-invalidation only on a clean baseline. |
+| **Near-Zone Market & OB Penetration (Draft P2)** | Add `near_zone_market_atr: 0.20` and `ob_max_penetration: 0.25` | **Defer:** `0.10–0.25 ATR` is the weakest bucket (`+0.139R`); fix zone-age starvation first | **Agree:** fix correctness & starvation before tuning entry zones | **Defer to Phase C (`C2`)** — evaluate only after Phase A + B restore clean data and model signal. |
+| **`momentum_continuation` Family (Draft P3)** | Build new BOS displacement continuation setup family | **Defer:** no edge evidence yet; ML (`AUC 0.561`) cannot score a new family | **Agree** | **Defer to Phase C (`C4`)** — requires clean baseline + retrained ML with `setup_kind` features. |
+| **Rejection Close-Chase & Retrace % (Draft P4)** | Close-chase on `bucket == 1` (`exp >= 3.0x`); tighten `retrace_pct` `50 → 35` | **Reject:** contradicts DEC-034 (`docs/rejectionproto-research.md`, close-chase was voided); `retrace_pct` only changes ~3–8 setups / 7,300 bars | **Agree:** real levers are `trigger_lookback_bars` (`2 → 4–6`) and `require_directional_sweep` | **Drop P4.** Revisit `trigger_lookback_bars` (`C3`) in Phase C only if rejection volume is still insufficient. |
+| **Executor Order Type & Drift Guard (Draft P5)** | Assumed `entry_type: market` overrode deep limits; proposed `entry_style` routing + live `eff_rr` check | Inverted diagnosis: claimed `limit` branch is unreachable even when `config` says `limit` | **Corrected (`D1`):** `config: limit` *does* work for zone setups; **rejection `retrace`** is what never maps to `limit`; fold drift-recalc back in | **Include in Phase A (`A3` + `A4`):** normalize order routing for both families + add live `eff_rr` guard on market fallbacks. |
+| **Zone-Age vs. Fill-Window Bug** | Missed (`entry_valid_bars` treated purely as fill expiry) | **Found (§6.5):** `setup_builder.py:328` rejects zones with `origin_index` > 24 bars old, killing 75% of OBs (median age 137 bars) | **Confirmed** + recommended setting defaults from measured distributions (FVG ~13, OB ~137) | **Core Phase A fix (`A2`).** |
+| **Fill-Fidelity Gap (`0.20 ATR` buffer)** | Missed | **Found (§6.7):** 30.1% of journal fills never touch `entry` (`+0.046R` phantom edge vs. strict broker limit) | **Confirmed** + noted Option (a) broker stop-level & RR risks | **Core Phase A fix (`A4`):** standardize on strict fills (`retest_buffer_atr: 0.0`). |
+| **Gate & Verdict Calibration** | Untouched | Identified `GATE_DEFAULTS` (`70/0.50`) vs. `config` (`44/0.41`) and claimed `AVOID` inversion | **Corrected (`D2`):** inversion was pooled-data artifact (`BUY` is `+0.177R`, `n=3` in new regime) | **Phase A (`A5`)** aligns gate defaults; **Phase B (`B1–B2`)** fixes ML leaf plateau before touching hybrid thresholds. |
+
+### 9.2 Verified New-Regime Verdict Breakdown (`id >= 2132`, Replaces §7.2 B2)
+
+Per **D2** and **D3**, verdict performance evaluated strictly within the current builder
+regime (`setups_history.id >= 2132`, `220` non-VOID resolved rows), with both standard
+win-rate denominators reported explicitly:
+
+| Verdict | Resolved | Filled (`W+L+ExpOpen`) | Wins | Losses | WR `W / (W+L)` | WR `W / Filled` | Expectancy |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| `AVOID` | 39 | 35 | 21 | 12 | 63.6% (`21/33`) | 60.0% (`21/35`) | **+0.770R** |
+| `BUY` | 3 | 3 | 1 | 2 | 33.3% (`1/3`) | 33.3% (`1/3`) | **+0.177R** |
+| `SELL` | 2 | 2 | 1 | 1 | 50.0% (`1/2`) | 50.0% (`1/2`) | **+0.305R** |
+| `WAIT` | 176 | 166 | 66 | 95 | 41.0% (`66/161`) | 39.8% (`66/166`) | **+0.185R** |
+
+**Conclusion:** `BUY` and `SELL` expectancies are positive in the new regime (`n = 2–3` is
+too small for threshold optimization). The real structural issue is that `hybrid.py:55`
+forces `AVOID` whenever the LLM disagrees (`aligned == False`) and `ml_prob < 0.42`, while
+55 setups sit pinned on a degenerate ML leaf at `ml_prob = 0.4108…` (just above the `0.41`
+LLM gate, just below the `0.42` override). Fix the ML plateau (`B1`) before tuning
+hybrid thresholds (`B2`).
+
+### 9.3 Phase A — Data Integrity, Starvation Fix & Execution Parity (`A1 → A5`)
+
+No ML retrain required. Execute in strict dependency order (`A1` must land before `A2`
+so the outcome resolver persists and honors per-family fill windows):
+
+| ID | Work Item | Files | Implementation Spec | Acceptance / Verification Metric |
+|---|---|---|---|---|
+| **A1** | **Persist missing setup metadata in journal** *(sequenced first per §8.3.4)* | `app/data/store.py` (`L240–245`), `app/engine/setup_builder.py` (`L434–456`) | Emit `"setup_kind": "zone"`, `"entry_style": "limit"`, and `"entry_valid_bars": entry_valid` on zone setups in `setup_builder.py`. Persist `setup_kind`, `entry_style`, `entry_valid_bars`, and `rejection` in `store.append_setups()` payload so `outcomes.py:63` honors per-family windows (8 bars for rejection, 24 bars for zone) and the Perf tab can segment families natively. | New rows in `setups_history` contain non-null `setup_kind`, `entry_style`, and `entry_valid_bars` in `payload`; `outcomes.py` resolves rejection setups with 8-bar expiry instead of 24-bar fallback. |
+| **A2** | **Decouple Zone Age from Fill Window** | `app/engine/setup_builder.py` (`L327–329`), `config.yaml` (`smc`), `app/config.py` | Split `entry_valid_bars` into two distinct parameters:<br>• `entry_valid_bars: 24` — **forward fill window** after setup formation (`labeler.py`, `outcomes.py`, pending expiry).<br>• `ob_setup_max_age_bars: 150` & `fvg_setup_max_age_bars: 48` — **POI formation age** at `setup_builder.py:328` (calibrated to measured median origin ages: OB `137` bars, FVG `13` bars; note `smc` already filters fresh zones at `300`/`200` in `ob_view`/`fvg_view`). | Replay across the 22 M15 symbols produces setups on **≥ 15 / 22 symbols** (up from `1 / 22`), with `order_block` candidates no longer artificially wiped out at bar 25. |
+| **A3** | **Fix Order-Type Routing for Both Families (`D1`)** | `app/engine/setup_builder.py`, `app/execution/executor.py` (`L466–491`), `config.yaml` | 1. Normalize `entry_style` mapping in `executor.py`:<br>   • `"limit"` (zone setups) and `"retrace"` (rejection retrace setups) → **`LIMIT`** order at `setup["entry"]`.<br>   • `"close"` / `"market"` → **`MARKET`** order.<br>2. Set `config.yaml` `execution.entry_type: limit` so passive setups place real `BUY_LIMIT` / `SELL_LIMIT` orders instead of chasing at market.<br>3. Make dry-run (`executor.py:473`) log the **normalized** order type (`"limit"` vs `"market"`) so dry-run matches live routing 1:1. | Dry-run test suite confirms **100%** of zone setups and `"retrace"` rejection setups log `order_type == "limit"`, and `"close"` rejection setups log `order_type == "market"`. |
+| **A4** | **Close Fill-Fidelity Gap & Add Live Drift Guard** | `config.yaml`, `app/engine/setup_builder.py`, `app/execution/executor.py` (`L480–495`), `app/engine/outcomes.py` | 1. **Unify fill definition:** Set `smc.retest_buffer_atr: 0.0` (strict touch) across builder, labeler, and outcome resolver so backtest/journal fills (`73.6%`) match actual MT5 limit execution (`73.6%`), eliminating the `+0.046R` phantom buffer gap without violating broker `trade_stops_level` or shrinking RR.<br>2. **Live drift guard on market fallback:** When a limit setup triggers `side_ok == False` (`executor.py:482`, price already at/past `entry`), recompute `eff_rr` against `tick.ask`/`tick.bid` and skip if `eff_rr < min_rr` or price has breached SL/TP. | Strict vs. journal fill rates converge to **0% discrepancy**; market-fallback unit test rejects any setup whose live tick reduces `eff_rr < min_rr`. |
+| **A5** | **Unify Gate Defaults Across Executor, Config & UI** | `app/execution/executor.py` (`L34, 137, 297, 300, 535`), `app/dashboard/static/index.html` (`L1887–1888`) | Replace hardcoded `GATE_DEFAULTS = {"min_score": 70.0, "min_ml_prob": 0.50}` with `DEFAULTS["execution"]` (`min_score: 44`, `min_ml_prob: 0.41`) so fallback defaults, `/api/execution/status`, `_gates()`, and the Trade tab UI inputs never disagree when `execution_overrides.json` is absent. | `/api/execution/status`, `_gates()`, `config.yaml`, and dashboard input placeholders report identical thresholds (`44` / `0.41`) out of the box. |
+
+### 9.4 Phase B — Restore ML Signal & Recalibrate Hybrid Verdict Gates (`B1 → B2`)
+
+Execute only after **Phase A** has accumulated **≥ 150–200** clean, strict-fill, family-tagged
+setups (or via historical replay under Phase A rules):
+
+| ID | Work Item | Files | Implementation Spec | Acceptance / Verification Metric |
+|---|---|---|---|---|
+| **B1** | **Eliminate the ML Probability Plateau** | `app/ai/ml_model.py`, `app/ai/features.py` | 1. Bump `BUILDER_VERSION` to `"v7-phaseA-strict"`.<br>2. Add `is_limit_entry` and `zone_age_ratio` features; audit `rr` dominance (`0.0595` top importance in `ml_baseline.json`) and isotonic calibration step-function quantization (which collapses 55 rows onto `ml_prob = 0.4108…`). Compare `calibration: sigmoid` vs. `isotonic` on purged time-series CV. | Out-of-fold `cv_auc > 0.60` (up from `0.561`), and no single probability leaf accounts for **> 5%** of predictions. |
+| **B2** | **Re-evaluate Hybrid Verdict & LLM Override Rules (`D2`)** | `app/ai/hybrid.py`, `config.yaml` | Once `B1` resolves the `0.4108…` leaf pile-up, audit `AVOID` vs. `BUY/SELL` on **post-Phase-A data only** (`n >= 30` per verdict bucket). Test whether `avoid_override_ml_prob` (`0.42`) and `contradiction_penalty` (`5.0`) should act as soft score adjustments rather than a hard `AVOID` veto when HTF + CSM + structure align. | `BUY/SELL` expectancy exceeds `WAIT` and `AVOID` on out-of-sample post-Phase-A setups (`n >= 30`). |
+
+### 9.5 Phase C — Reporting & Conditional Entry Expansion (`C1 → C4`)
+
+| ID | Work Item | Scope | Gate to Proceed |
+|---|---|---|---|
+| **C1** | **Dashboard Regime & Family Reporting** | `app/engine/outcomes.py`, `app/dashboard/static/index.html` | **Always do:** add family breakdown (`zone:fvg`, `zone:order_block`, `rejection`), regime filter (`id >= 2132` / post-Phase-A), and explicit denominators (`W/(W+L)` + `W/Filled`) to the Perf tab. |
+| **C2** | **Near-Zone Market Entry & OB Penetration (Draft P2)** | `setup_builder.py`, `order_blocks.py` | Proceed **only if** Phase A/B telemetry shows near-miss setups (`0.05–0.20 ATR`) still under-filling with positive simulated market expectancy after spread/slippage. |
+| **C3** | **Rejection Trigger Lookback Tuning (Revised Draft P4)** | `setup_builder.py`, `config.yaml` | Proceed **only if** rejection sample volume is too low; widen `trigger_lookback_bars` (`2 → 4–6`) rather than changing `retrace_pct` or re-enabling voided close-chase (DEC-034). |
+| **C4** | **`momentum_continuation` Setup Family (Draft P3)** | `setup_builder.py`, `features.py`, `ml_model.py` | Proceed **only after** `B1`/`B2` are validated and replay demonstrates `> +0.15R` net expectancy on BOS displacement continuations. |
