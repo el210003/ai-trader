@@ -162,7 +162,7 @@ def make_features(df, setup: dict, smc: dict, cfg: dict,
     elif ztype == "fvg":
         max_z_age = max(1, int(cfg.get("fvg_setup_max_age_bars", 48)))
     else:
-        max_z_age = max(1, int((cfg.get("rejection") or {}).get("trigger_lookback_bars", 2)))
+        max_z_age = max(1, int((cfg.get("rejection") or {}).get("trigger_lookback_bars", 6)))
     zone_age_ratio = min(1.0, max(0.0, zone_age / max_z_age))
 
     stop_dist_atr = abs(entry - float(setup["stop_loss"])) / atr_v

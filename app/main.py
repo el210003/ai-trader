@@ -433,12 +433,19 @@ def cmd_outcomes(cfg, args):
     rows = store.load_outcome_rows(args.symbol, args.tf)
     agg = outcomes_mod.aggregate(rows)
     o = agg["overall"]
-    print(f"\nresolved outcomes: {o['resolved']} (wins {o['wins']}) | "
-          f"win rate {o['win_rate']} | expectancy {o['expectancy_r']}R | "
-          f"fill rate {o['fill_rate']}")
+    print(f"\nresolved outcomes: {o['resolved']} (wins {o['wins']}/{o['resolved']} W+L, "
+          f"{o['wins']}/{o['filled']} filled) | "
+          f"WR(W+L) {o['win_rate']} | WR(filled) {o['win_rate_filled']} | "
+          f"expectancy {o['expectancy_r']}R | fill rate {o['fill_rate']}")
+    print("\nby family:")
+    for k, v in agg["by_family"].items():
+        print(f"  {k:<17} n={v['n']:<5} WR(W+L) {v['win_rate']} | WR(filled) {v['win_rate_filled']} | expectancy {v['expectancy_r']}R")
+    print("\nby regime:")
+    for k, v in agg["by_regime"].items():
+        print(f"  {k:<17} n={v['n']:<5} WR(W+L) {v['win_rate']} | WR(filled) {v['win_rate_filled']} | expectancy {v['expectancy_r']}R")
     print("\nby verdict:")
     for k, v in agg["by_verdict"].items():
-        print(f"  {k:<9} n={v['n']:<5} win rate {v['win_rate']} | expectancy {v['expectancy_r']}R")
+        print(f"  {k:<9} n={v['n']:<5} WR(W+L) {v['win_rate']} | WR(filled) {v['win_rate_filled']} | expectancy {v['expectancy_r']}R")
     print("\nby HTF alignment:")
     for k, v in agg["by_htf_alignment"].items():
         print(f"  {k:<12} n={v['n']:<5} win rate {v['win_rate']} | expectancy {v['expectancy_r']}R")

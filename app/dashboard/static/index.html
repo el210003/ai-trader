@@ -501,10 +501,17 @@ footer{padding:6px 16px;font-size:11px;color:var(--muted);border-top:1px solid v
     </div>
 
     <div id="viewPerf" class="pad" style="display:none">
-      <div class="card"><div class="card-h"><span class="ic">Σ</span><h3>Setup Effectiveness</h3><span class="sub" id="perfSub">…</span></div>
+      <div class="card"><div class="card-h"><span class="ic">Σ</span><h3>Setup Effectiveness</h3>
+        <select id="perfRegime" style="margin-left:8px;background:var(--panel2);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:2px 6px;font-size:10.5px;font-family:var(--mono)">
+          <option value="">All regimes</option>
+          <option value="new" selected>New regime (id ≥ 2132)</option>
+          <option value="phase_a">Phase A strict</option>
+          <option value="old">Old regime (id &lt; 2132)</option>
+        </select>
+        <span class="sub" id="perfSub">…</span></div>
         <div id="perfOverall"></div>
       </div>
-      <div class="card"><div class="card-h"><span class="ic">⚖</span><h3>By Verdict · Score Band · ML Calibration</h3></div><div id="perfTables1"><div class="empty">loading…</div></div></div>
+      <div class="card"><div class="card-h"><span class="ic">⚖</span><h3>By Family · Verdict · Score Band · ML Calibration</h3></div><div id="perfTables1"><div class="empty">loading…</div></div></div>
       <div class="card"><div class="card-h"><span class="ic">◈</span><h3>By HTF Alignment · Direction · Session · Symbol</h3></div><div id="perfTables2"><div class="empty">loading…</div></div></div>
       <div class="card"><div class="card-h"><span class="ic">⚡</span><h3>Insights &amp; Recommendations</h3><span class="sub" id="insightsSub">auto-diagnosis from resolved outcomes</span></div><div id="insightRows"><div class="empty">loading…</div></div></div>
       <div class="card"><div class="card-h"><span class="ic">∿</span><h3>Feature Discrimination</h3><span class="sub">tercile win-rate spread per ML feature</span></div><div id="featReport"><div class="empty">loading…</div></div></div>
@@ -1435,18 +1442,20 @@ $('csmHide').onclick = () => {
 /* ------------------------------------------------- performance tab */
 function perfTable(title, rows){
   if (!rows || !rows.length) return '';
-  const maxN = Math.max(...rows.map(r => r.n), 1);
   return `<table class="perf-t">
-    <tr><th>${title}</th><th>n</th><th>win rate</th><th>expectancy</th><th style="width:34%"></th></tr>
+    <tr><th>${title}</th><th>n (res/fill)</th><th>W/(W+L)</th><th>W/Filled</th><th>expectancy</th><th style="width:26%"></th></tr>
     ${rows.map(r => {
       const exp = r.expectancy_r;
       const expCls = exp==null ? 'var(--muted)' : exp>0 ? 'var(--green)' : exp<0 ? 'var(--red)' : 'var(--muted)';
       const wr = r.win_rate==null ? '—' : (r.win_rate*100).toFixed(0)+'%';
+      const wrf = r.win_rate_filled==null ? '—' : (r.win_rate_filled*100).toFixed(0)+'%';
       const wrCls = r.win_rate==null ? 'var(--muted)' : r.win_rate>=0.5 ? 'var(--green)' : 'var(--red)';
       const w = Math.round((r.win_rate||0)*100);
+      const nTxt = (r.resolved!=null && r.filled!=null) ? `${r.n} (${r.resolved}/${r.filled})` : `${r.n}`;
       return `<tr>
-        <td>${esc(r.key)}</td><td class="mono">${r.n}</td>
+        <td>${esc(r.key)}</td><td class="mono">${nTxt}</td>
         <td style="color:${wrCls}">${wr}</td>
+        <td class="mono" style="color:var(--muted)">${wrf}</td>
         <td style="color:${expCls}" class="mono">${exp==null?'—':(exp>0?'+':'')+exp.toFixed(2)+'R'}</td>
         <td><div class="perf-bar"><div class="perf-fill ${w>=50?'g':'r'}" style="width:${w}%"></div></div></td>
       </tr>`;
@@ -1455,27 +1464,39 @@ function perfTable(title, rows){
 }
 
 async function loadPerf(){
+  const reg = $('perfRegime') ? $('perfRegime').value : '';
+  const buildQs = (tfVal) => {
+    const p = new URLSearchParams();
+    if (tfVal) p.set('tf', tfVal);
+    if (reg) p.set('regime', reg);
+    const s = p.toString();
+    return s ? `?${s}` : '';
+  };
   try{
     const etf = state.meta?.entry_tf;
-    const qs = etf ? `?tf=${encodeURIComponent(etf)}` : '';
-    const r = await fetch('/api/outcomes/stats'+qs);
+    const r = await fetch('/api/outcomes/stats'+buildQs(etf));
     const j = await r.json();
     const o = j.overall || {};
-    $('perfSub').textContent = `${o.resolved||0} resolved · ${o.open||0} open · fill rate ${o.fill_rate==null?'—':(o.fill_rate*100).toFixed(0)+'%'}`;
+    const plat = j.ml_plateau || {};
+    const platTxt = plat.n ? ` · ML max-leaf ${(plat.top_share*100).toFixed(1)}% (${plat.unique} uniq)` : '';
+    $('perfSub').textContent = `${o.resolved||0} W/L · ${o.filled||0} filled · fill ${(o.fill_rate==null?'—':(o.fill_rate*100).toFixed(0)+'%')}${platTxt}`;
     const card = (v, k, cls='') => `<div class="rs-item"><span class="rs-v ${cls}">${v}</span><span class="rs-k">${k}</span></div>`;
     const exp = o.expectancy_r==null ? '—' : (o.expectancy_r>0?'+':'')+o.expectancy_r.toFixed(2)+'R';
     $('perfOverall').innerHTML = `<div class="rank-summary">
       ${card(exp, 'expectancy', o.expectancy_r>0?'up':'dn')}
-      ${card(o.win_rate==null?'—':(o.win_rate*100).toFixed(0)+'%', 'win rate')}
+      ${card(o.win_rate==null?'—':(o.win_rate*100).toFixed(0)+'%', 'WR W/(W+L)')}
+      ${card(o.win_rate_filled==null?'—':(o.win_rate_filled*100).toFixed(0)+'%', 'WR W/Filled')}
+      ${card(`${o.wins??0}/${o.resolved??0}`, 'wins / W+L')}
       ${card(o.avg_win_r==null?'—':'+'+o.avg_win_r.toFixed(2)+'R', 'avg win R')}
-      ${card(o.wins??0, 'wins')}
       ${card(o.avg_mfe_r==null?'—':o.avg_mfe_r.toFixed(2)+'R', 'avg MFE', 'up')}
       ${card(o.avg_mae_r==null?'—':o.avg_mae_r.toFixed(2)+'R', 'avg MAE', 'dn')}
     </div>`;
     const mk = (obj) => Object.entries(obj||{}).map(([k,v]) => ({key:k, ...v}));
     const cal = Object.entries(j.calibration||{}).map(([k,v]) =>
-      ({key:`pred ${k}`, n:v.n, win_rate:v.realized, expectancy_r:null}));
+      ({key:`pred ${k}`, n:v.n, resolved:null, filled:null, win_rate:v.realized, win_rate_filled:null, expectancy_r:null}));
     $('perfTables1').innerHTML =
+      perfTable('Setup Family', mk(j.by_family)) +
+      perfTable('Regime', mk(j.by_regime)) +
       perfTable('Verdict', mk(j.by_verdict)) +
       perfTable('Score band', mk(j.by_score_band)) +
       perfTable('ML prob → realized', cal);
@@ -1487,7 +1508,7 @@ async function loadPerf(){
   }catch(e){ $('perfOverall').innerHTML = '<div class="empty">failed to load</div>'; }
   try{
     const etf2 = state.meta?.entry_tf;
-    const r2 = await fetch('/api/insights' + (etf2 ? `?tf=${encodeURIComponent(etf2)}` : ''));
+    const r2 = await fetch('/api/insights' + buildQs(etf2));
     const j2 = await r2.json();
     $('insightsSub').textContent = `auto-diagnosis · ${j2.n_resolved||0} resolved · buckets <20 suppressed`;
     const sevIcon = s => s==='action' ? '<span style="color:var(--amber)">!!</span>' : s==='warn' ? '<span style="color:var(--red)">!</span>' : '<span style="color:var(--muted)">·</span>';
@@ -1646,6 +1667,7 @@ $('refreshBtn').onclick = async () => {
 };
 $('symbolSel').onchange = () => { loadAnalysis(); loadMtfStatus(); };
 $('tfSel').onchange = loadAnalysis;
+if ($('perfRegime')) $('perfRegime').onchange = loadPerf;
 $('retrainBtn').onclick = async () => {
   $('retrainBtn').disabled = true;
   try{

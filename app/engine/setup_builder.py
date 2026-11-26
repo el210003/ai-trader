@@ -110,7 +110,7 @@ def _rejection_setups(symbol: str, tf: str, df, smc: dict, cfg: dict,
     mode = (rj.get("mode") or "retrace").strip().lower()
     retrace_pct = min(100.0, max(0.0, float(rj.get("retrace_pct", 50.0))))
     entry_valid = int(rj.get("entry_valid_bars", 8))
-    trigger_lb = max(1, int(rj.get("trigger_lookback_bars", 2)))
+    trigger_lb = max(1, int(rj.get("trigger_lookback_bars", 6)))
     directional = bool(rj.get("require_directional_sweep", True))
     allowed = {int(b) for b in (rj.get("buckets") or [0, 1, 2])}
     buffer_atr = float(rj.get("sl_buffer_atr", 0.25))

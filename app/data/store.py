@@ -381,8 +381,12 @@ class Store:
 
     @_locked
     def load_outcome_rows(self, symbol: str = None, tf: str = None,
-                          limit: int = 20000) -> list:
-        """Resolved setups joined with their outcomes (for aggregation)."""
+                          limit: int = 20000, regime: str = None) -> list:
+        """Resolved setups joined with their outcomes (for aggregation).
+
+        Optional `regime` filter: 'new' (id >= 2132), 'old' (id < 2132),
+        'phase_a' / 'strict' (setup_kind persisted + fill_tolerance == 0).
+        """
         q = ("SELECT h.id, h.symbol, h.tf, h.formed_at, h.direction, h.verdict, "
              "h.score, h.ml_prob, h.rr, h.entry, h.stop_loss, h.take_profit, h.payload, "
              "o.result, o.filled, o.fill_time, o.r_multiple, o.mfe_r, o.mae_r, "
@@ -394,6 +398,11 @@ class Store:
             conds.append("h.symbol=?"); params.append(symbol)
         if tf:
             conds.append("h.tf=?"); params.append(tf)
+        reg = (regime or "").strip().lower()
+        if reg == "new":
+            conds.append("h.id >= 2132")
+        elif reg == "old":
+            conds.append("h.id < 2132")
         if conds:
             q += " WHERE " + " AND ".join(conds)
         q += " ORDER BY h.formed_at DESC LIMIT ?"
@@ -403,7 +412,18 @@ class Store:
                 "score", "ml_prob", "rr", "entry", "stop_loss", "take_profit",
                 "payload", "result", "filled", "fill_time", "r_multiple",
                 "mfe_r", "mae_r", "bars_to_outcome", "resolved_at", "post_loss_tp_hit"]
-        return [dict(zip(cols, r)) for r in cur.fetchall()]
+        rows = [dict(zip(cols, r)) for r in cur.fetchall()]
+        if reg in ("phase_a", "strict"):
+            filtered = []
+            for r in rows:
+                try:
+                    p = json.loads(r["payload"]) if r.get("payload") else {}
+                except Exception:
+                    p = {}
+                if p.get("setup_kind") is not None and float(p.get("fill_tolerance") or 0.0) == 0.0:
+                    filtered.append(r)
+            return filtered
+        return rows
 
     @_locked
     def outcome_history_for_symbol(self, symbol: str, limit: int = 500) -> list:

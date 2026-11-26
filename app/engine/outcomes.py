@@ -186,23 +186,57 @@ def _expectancy(rs):
 
 def _bucket(rs):
     resolved = [r for r in rs if r["result"] in (WIN, LOSS)]
-    return {"n": len(rs), "resolved": len(resolved),
-            "wins": sum(1 for r in resolved if r["result"] == WIN),
-            "win_rate": _win_rate(resolved), "expectancy_r": _expectancy(resolved)}
+    wins = sum(1 for r in resolved if r["result"] == WIN)
+    losses = sum(1 for r in resolved if r["result"] == LOSS)
+    filled = sum(1 for r in rs if r.get("filled") or r["result"] in (WIN, LOSS, EXPIRED_OPEN))
+    return {
+        "n": len(rs),
+        "resolved": len(resolved),
+        "filled": filled,
+        "wins": wins,
+        "losses": losses,
+        "win_rate": _win_rate(resolved),
+        "win_rate_filled": round(wins / filled, 3) if filled else None,
+        "fill_rate": round(filled / len(rs), 3) if rs else None,
+        "expectancy_r": _expectancy(resolved),
+    }
+
+
+def _family_key(r: dict, payload: dict) -> str:
+    sk = (payload.get("setup_kind") or "").strip().lower()
+    ez = payload.get("entry_zone") or {}
+    zt = (ez.get("type") or "").strip().lower()
+    if sk == "rejection" or zt == "rejection_bar":
+        return "rejection"
+    if zt:
+        return f"zone:{zt}"
+    return sk or "zone"
+
+
+def _regime_key(r: dict, payload: dict) -> str:
+    if payload.get("setup_kind") is not None and float(payload.get("fill_tolerance") or 0.0) == 0.0:
+        return "phase_a_strict"
+    sid = r.get("id")
+    if sid is not None and int(sid) >= 2132:
+        return "new_regime"
+    return "old_regime"
 
 
 def aggregate(rows: list) -> dict:
     """Aggregate resolved outcome rows into the Performance-tab views."""
+    import json
+    from collections import Counter
+
     for r in rows:
+        p = {}
         if r.get("payload"):
             try:
-                import json
-                p = json.loads(r["payload"])
-                r["htf_metrics"] = p.get("htf_metrics") or {}
+                p = json.loads(r["payload"]) or {}
             except Exception:
-                r["htf_metrics"] = {}
-        else:
-            r["htf_metrics"] = {}
+                p = {}
+        r["htf_metrics"] = p.get("htf_metrics") or {}
+        r["_family"] = _family_key(r, p)
+        r["_regime"] = _regime_key(r, p)
 
     tradable = [r for r in rows if (r.get("verdict") or "").upper() in ("BUY", "SELL")]
     waiting = [r for r in rows if (r.get("verdict") or "").upper() == "WAIT"]
@@ -253,13 +287,27 @@ def aggregate(rows: list) -> dict:
             return "NY 16–20"
         return "Late 20–24"
 
+    ml_probs = [round(float(r["ml_prob"]), 5) for r in rows if r.get("ml_prob") is not None]
+    if ml_probs:
+        top_prob, top_cnt = Counter(ml_probs).most_common(1)[0]
+        top_share = round(top_cnt / len(ml_probs), 4)
+        ml_plateau = {
+            "n": len(ml_probs),
+            "unique": len(set(ml_probs)),
+            "top_prob": top_prob,
+            "top_count": top_cnt,
+            "top_share": top_share,
+            "healthy": bool(len(ml_probs) < 20 or top_share <= 0.05),
+        }
+    else:
+        ml_plateau = {"n": 0, "unique": 0, "top_prob": None, "top_count": 0, "top_share": None, "healthy": True}
+
     resolved = [r for r in rows if r["result"] in (WIN, LOSS)]
     wins = [r for r in resolved if r["result"] == WIN]
     return {
         "overall": {
             **_bucket(rows),
-            "fill_rate": (round(sum(1 for r in rows if r["filled"]) / len(rows), 3)
-                          if rows else None),
+            "open": sum(1 for r in rows if r["result"] == EXPIRED_OPEN),
             "avg_win_r": (round(sum(r["r_multiple"] for r in wins) / len(wins), 3)
                           if wins else None),
             "avg_mfe_r": (round(sum(r["mfe_r"] for r in rows if r["filled"]) /
@@ -271,6 +319,8 @@ def aggregate(rows: list) -> dict:
         },
         "by_verdict": {"BUY/SELL": _bucket(tradable), "WAIT": _bucket(waiting),
                        "AVOID": _bucket(avoid)},
+        "by_family": by(lambda r: r.get("_family", "zone")),
+        "by_regime": by(lambda r: r.get("_regime", "old_regime")),
         "by_score_band": by(lambda r: ("<60" if (r.get("score") or 0) < 60 else
                                        "60–70" if r.get("score") < 70 else
                                        "70–80" if r.get("score") < 80 else "80+")),
@@ -279,4 +329,5 @@ def aggregate(rows: list) -> dict:
         "by_direction": by(lambda r: r["direction"] or "?"),
         "by_session": by(session_key),
         "calibration": calibration,
+        "ml_plateau": ml_plateau,
     }

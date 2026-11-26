@@ -83,7 +83,7 @@ smc:
     retrace_pct: 50           # entry depth into the bar body from the close side, %
                               # (50 = body midpoint, the RET variant; EA rounding: half-up points)
     entry_valid_bars: 8       # RET window: unfilled retrace entries expire after 8 bars
-    trigger_lookback_bars: 2  # rejection bars this recent can still arm a setup
+    trigger_lookback_bars: 6  # rejection bars this recent can still arm a setup
     require_directional_sweep: true  # longs need a sellside sweep (spring), shorts buyside
     use_day_extremes: true    # sweep references include the running server-day H/L (EA: InpUseDayExtreme)
     buckets: [0, 1, 2]        # trade which buckets: 0=A-grade, 1=momentum, 2=other

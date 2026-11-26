@@ -727,20 +727,20 @@ def create_app(cfg: dict) -> FastAPI:
         return out
 
     @app.get("/api/outcomes/stats")
-    def outcomes_stats(symbol: str = None, tf: str = None):
+    def outcomes_stats(symbol: str = None, tf: str = None, regime: str = None):
         """Aggregated setup-effectiveness views (Performance tab)."""
         from ..engine import outcomes as outcomes_mod
-        rows = store.load_outcome_rows(symbol, tf)
+        rows = store.load_outcome_rows(symbol, tf, regime=regime)
         return outcomes_mod.aggregate(rows)
 
     @app.get("/api/insights")
-    def insights(tf: str = None):
+    def insights(tf: str = None, regime: str = None):
         """Tier 1+2: diagnosis insights + feature discrimination report."""
         from ..engine import insights as insights_mod
-        rows = store.load_outcome_rows(None, tf)
+        rows = store.load_outcome_rows(None, tf, regime=regime)
         return {"insights": insights_mod.generate_insights(rows, cfg),
                 "feature_report": insights_mod.feature_report(rows),
-                "n_resolved": sum(1 for r in rows if r["result"] in ("WIN", "LOSS"))}
+                "n_resolved": sum(1 for r in rows if r["result"] in ("WIN", "LOSS"))} 
 
     @app.post("/api/outcomes/resolve")
     def outcomes_resolve():

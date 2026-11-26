@@ -63,7 +63,7 @@ class FastSMC:
         # (practically always one; infer_point can drift on unusual quotes)
         self.point_by_bar = infer_point_by_bar(df, point=cfg.get("point"))
         rj_cfg = cfg.get("rejection") or {}
-        self._rej_window = max(2, int(rj_cfg.get("trigger_lookback_bars", 2))) + 16
+        self._rej_window = max(2, int(rj_cfg.get("trigger_lookback_bars", 6))) + 16
         self._rej_streams = {}
         for b in np.unique(self.point_by_bar) if len(self.point_by_bar) else ():
             p = float(b)
@@ -124,7 +124,7 @@ class FastSMC:
         st = self._rej_streams.get(float(self.point_by_bar[i]))
         if st is not None:
             trig_lb = max(2, int((cfg.get("rejection") or {}).get(
-                "trigger_lookback_bars", 2)))
+                "trigger_lookback_bars", 6)))
             arm_from = i + 1 - trig_lb          # builder breaks past this
             rej_i = [e for e in rejection_tail(st, i, atr_i, self._rej_window)
                      if e["index"] >= arm_from]
