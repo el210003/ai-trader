@@ -119,7 +119,7 @@ def _rejection_setups(symbol: str, tf: str, df, smc: dict, cfg: dict,
     min_rr = float(cfg.get("min_rr", 1.5))
     default_rr = float(cfg.get("default_rr", 2.0))
     max_rr = float(cfg.get("max_rr", 5.0))
-    retest_buffer = float(cfg.get("retest_buffer_atr", 0.20)) * atr_v
+    retest_buffer = float(cfg.get("retest_buffer_atr", 0.0)) * atr_v
     point = infer_point(df, point=point if point is not None else cfg.get("point"))
 
     setups: List[dict] = []
@@ -284,8 +284,10 @@ def build_setups(symbol: str, tf: str, df, smc: dict, cfg: dict,
     max_rr = float(cfg.get("max_rr", 5.0))
     buffer_atr = float(cfg.get("sl_buffer_atr", 0.25))
     min_risk = float(cfg.get("min_risk_atr", 0.75)) * atr_v
-    retest_buffer = float(cfg.get("retest_buffer_atr", 0.20)) * atr_v
+    retest_buffer = float(cfg.get("retest_buffer_atr", 0.0)) * atr_v
     entry_valid = int(cfg.get("entry_valid_bars", 24))
+    ob_max_setup_age = int(cfg.get("ob_setup_max_age_bars", 150))
+    fvg_max_setup_age = int(cfg.get("fvg_setup_max_age_bars", 48))
     skip_already_tested = bool(cfg.get("skip_already_tested", True))
     require_zone_sweep = bool(cfg.get("require_zone_sweep", False))
     lows = df["low"].values
@@ -323,9 +325,10 @@ def build_setups(symbol: str, tf: str, df, smc: dict, cfg: dict,
 
         cands = []
         for ztype, z in zones:
-            # entry-validity window: expire stale POIs (zone formed too long ago)
+            # POI formation age gate (decoupled from forward fill window entry_valid_bars)
             zone_age = n - 1 - z["origin_index"]
-            if entry_valid > 0 and zone_age > entry_valid:
+            max_zone_age = ob_max_setup_age if ztype == "order_block" else fvg_max_setup_age
+            if max_zone_age > 0 and zone_age > max_zone_age:
                 continue
             mid = (z["top"] + z["bottom"]) / 2.0
             if direction == "long":
@@ -422,10 +425,13 @@ def build_setups(symbol: str, tf: str, df, smc: dict, cfg: dict,
 
         setups.append({
             "symbol": symbol, "tf": tf, "direction": direction, "status": "active",
+            "setup_kind": "zone",
+            "entry_style": "limit",
             "entry": float(entry), "stop_loss": float(sl), "take_profit": float(tp),
             "rr": round(float(rr), 2),
             "entry_distance_atr": round(float(run_atr), 2),
             "fill_tolerance": round(float(retest_buffer), 8),
+            "entry_valid_bars": entry_valid,
             "atr": float(atr_v),
             "entry_zone": {"type": ztype, "top": float(z["top"]), "bottom": float(z["bottom"]),
                            "origin_time": int(z["origin_time"]), "origin_index": int(z["origin_index"])},

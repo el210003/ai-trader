@@ -24,6 +24,7 @@ import time
 from collections import Counter
 from pathlib import Path
 
+from ..config import DEFAULTS
 from ..data import mt5_client
 from ..logsetup import debug
 from . import mt5_trader
@@ -31,7 +32,11 @@ from . import mt5_trader
 # Runtime-adjustable parameters (Trade tab / API): the strictness gates plus
 # the bot's order identity. Values are clamped/validated no matter where they
 # come from (config.yaml, overrides file, API).
-GATE_DEFAULTS = {"min_score": 70.0, "min_ml_prob": 0.50}
+_EXEC_DEFAULTS = DEFAULTS["execution"]
+GATE_DEFAULTS = {
+    "min_score": float(_EXEC_DEFAULTS["min_score"]),
+    "min_ml_prob": float(_EXEC_DEFAULTS["min_ml_prob"]),
+}
 GATE_LIMITS = {"min_score": (0.0, 100.0), "min_ml_prob": (0.0, 1.0)}
 COMMENT_MAX = 31                     # MT5 order-comment display limit
 MAGIC_MAX = 2**63 - 1                # MT5 stores the magic as an unsigned long
@@ -338,10 +343,10 @@ class ExecutionEngine:
             return "verdict not tradeable"
         if (verdict == "BUY") != (direction == "long"):
             return "verdict/direction mismatch"
-        if float(s.get("final_score") or 0) < self._float("min_score", 70):
+        if float(s.get("final_score") or 0) < self._float("min_score", GATE_DEFAULTS["min_score"]):
             return f"score {s.get('final_score')} < min_score"
         ml = s.get("ml_prob")
-        if ml is not None and ml < self._float("min_ml_prob", 0.50):
+        if ml is not None and ml < self._float("min_ml_prob", GATE_DEFAULTS["min_ml_prob"]):
             return f"ml_prob {ml:.2f} < min_ml_prob"
 
         # account caps (positions + pendings, our magic only)
@@ -463,34 +468,50 @@ class ExecutionEngine:
         comment = (self.x.get("comment") or "ai-trader")
         deviation = self._int("deviation", 20)
 
-        # per-setup entry style overrides the engine default (rejection setups
-        # carry entry_style: retrace -> limit into the rejection bar body)
-        entry_type = ((s.get("entry_style") or self.x.get("entry_type"))
-                      or "market").strip().lower()
+        # Normalize setup entry_style / engine entry_type:
+        #   "limit" (zone) and "retrace" (rejection) -> "limit" at setup["entry"]
+        #   "close" / "market"                       -> "market"
+        raw_style = ((s.get("entry_style") or self.x.get("entry_type"))
+                     or _EXEC_DEFAULTS["entry_type"]).strip().lower()
+        entry_type = "limit" if raw_style in ("limit", "retrace") else "market"
 
-        # ---- dry run: record what WOULD be sent
-        if self.dry_run:
-            rec = {**base, "status": "dry_run", "lot": lot,
-                   "order_type": entry_type,
-                   "requested_price": ref_price, "reason": "dry run (no order sent)"}
-            self.store.record_trade(self._row(rec, s))
-            return {**rec, "price": ref_price}
-
-        # ---- live send
+        limit_price = None
         if entry_type == "limit":
             # limit at the setup's zone entry; fall back to market when the
             # zone is already at/past the market (price would fill instantly)
-            price = mt5_trader.normalize_price(entry, info)
-            side_ok = (price < tick.ask) if direction == "long" else (price > tick.bid)
-            if side_ok:
-                res = mt5_trader.send_limit(mt5, symbol, direction, lot, price,
-                                            sl, tp, self.magic, comment, info=info)
-                status = "placed" if res["ok"] else "rejected"
-            else:
+            limit_price = mt5_trader.normalize_price(entry, info)
+            side_ok = (limit_price < tick.ask) if direction == "long" else (limit_price > tick.bid)
+            if not side_ok:
+                # Live drift guard: verify price hasn't breached SL/TP and
+                # effective RR at current market price still clears min_rr.
+                breached = (not (sl < ref_price < tp)) if direction == "long" else (not (tp < ref_price < sl))
+                if breached:
+                    return {**base, "status": "skipped",
+                            "reason": f"drift breached SL/TP (price {ref_price}, sl {sl}, tp {tp})"}
+                eff_rr = ((tp - ref_price) / (ref_price - sl)) if direction == "long" \
+                    else ((ref_price - tp) / (sl - ref_price))
+                min_rr = float(self.x.get("min_rr") or (self.cfg.get("smc") or {}).get("min_rr", 1.5))
+                if eff_rr + 1e-9 < min_rr:
+                    return {**base, "status": "skipped",
+                            "reason": f"drift eff_rr {eff_rr:.2f} < min_rr {min_rr:.2f}"}
                 entry_type = "market (zone at market)"
-                res = mt5_trader.send_market(mt5, symbol, direction, lot, sl, tp,
-                                             self.magic, comment, deviation, info=info)
-                status = "filled" if res["ok"] else "rejected"
+
+        req_price = limit_price if entry_type == "limit" else ref_price
+
+        # ---- dry run: record what WOULD be sent (matches live routing 1:1)
+        if self.dry_run:
+            rec = {**base, "status": "dry_run", "lot": lot,
+                   "order_type": entry_type,
+                   "requested_price": req_price, "reason": "dry run (no order sent)"}
+            self.store.record_trade(self._row(rec, s))
+            return {**rec, "price": req_price}
+
+        # ---- live send
+        if entry_type == "limit":
+            res = mt5_trader.send_limit(mt5, symbol, direction, lot, limit_price,
+                                        sl, tp, self.magic, comment, info=info)
+            status = "placed" if res["ok"] else "rejected"
+            price = limit_price
         else:
             res = mt5_trader.send_market(mt5, symbol, direction, lot, sl, tp,
                                          self.magic, comment, deviation, info=info)
@@ -498,7 +519,7 @@ class ExecutionEngine:
             price = res.get("price") or ref_price
 
         rec = {**base, "status": status, "lot": lot, "order_type": entry_type,
-               "requested_price": ref_price, "fill_price": res.get("price"),
+               "requested_price": req_price, "fill_price": res.get("price"),
                "ticket": res.get("order"), "deal": res.get("deal"),
                "retcode": res.get("retcode"),
                "reason": res.get("comment") or mt5_trader.retcode_text(res.get("retcode"))}
@@ -538,11 +559,11 @@ class ExecutionEngine:
         out = {
             "enabled": self.enabled, "dry_run": self.dry_run, "magic": self.magic,
             "comment": self.x.get("comment") or "ai-trader",
-            "entry_type": self.x.get("entry_type", "market"),
+            "entry_type": self.x.get("entry_type", _EXEC_DEFAULTS["entry_type"]),
             "risk_percent": self._float("risk_percent", 1.0),
             "fixed_lot": self.x.get("fixed_lot"),
-            "min_score": self._float("min_score", 70),
-            "min_ml_prob": self._float("min_ml_prob", 0.50),
+            "min_score": self._float("min_score", GATE_DEFAULTS["min_score"]),
+            "min_ml_prob": self._float("min_ml_prob", GATE_DEFAULTS["min_ml_prob"]),
             "max_open_positions": self._int("max_open_positions", 3),
             "max_per_symbol": self._int("max_per_symbol", 1),
             "max_trades_per_day": self._int("max_trades_per_day", 5),

@@ -13,7 +13,8 @@ cfg = load_config()
 cfg["storage"]["path"] = os.path.join(tmp, "test.db")
 cfg["_root"] = tmp   # isolate runtime overrides (data/execution_overrides.json)
 cfg["execution"].update({"enabled": True, "dry_run": True, "min_score": 70,
-                         "min_ml_prob": 0.5, "fresh_seconds": 120})
+                         "min_ml_prob": 0.5, "fresh_seconds": 120,
+                         "trading_hours": None})
 
 store = Store(cfg["storage"]["path"])
 
@@ -86,10 +87,10 @@ s4 = engine.scan_once()
 assert any("score" in k for k in s4["skipped"]), s4
 print("pass 4 (score gate):", s4["skipped"])
 
-# 5) live mode (dry_run off) -> filled
+# 5) live mode (dry_run off, explicit market) -> filled
 store2 = Store(os.path.join(tmp, "t2.db"))
 cfg2 = dict(cfg); cfg2["storage"]["path"] = os.path.join(tmp, "t2.db")
-cfg2["execution"] = dict(cfg["execution"], dry_run=False, cooldown_minutes=0)
+cfg2["execution"] = dict(cfg["execution"], entry_type="market", dry_run=False, cooldown_minutes=0)
 store2.save_analysis("EURUSD", "M15", analysis)
 engine2 = ExecutionEngine(cfg2, store2, allowed_symbols={"EURUSD"}, verbose=False)
 engine2._connect = lambda: fake_mt5
@@ -152,5 +153,97 @@ eng9b = ExecutionEngine(cfg9, store2, allowed_symbols={"EURUSD"}, verbose=False)
 assert eng9b.magic == 424242, eng9b.magic
 assert eng9b.gates() == {"min_score": 55.0, "min_ml_prob": 0.6}, eng9b.gates()
 print("pass 9 (runtime params):", g9, ident)
+
+# 10) Phase A verification: A1 journal persistence, A2 age decoupling, A3 routing, A4 drift guard, A5 gate defaults
+def_cfg = load_config()
+assert def_cfg["smc"]["retest_buffer_atr"] == 0.0
+assert def_cfg["smc"]["ob_setup_max_age_bars"] == 150
+assert def_cfg["smc"]["fvg_setup_max_age_bars"] == 48
+assert def_cfg["smc"]["entry_valid_bars"] == 24
+assert def_cfg["execution"]["entry_type"] == "limit"
+assert def_cfg["execution"]["min_score"] == 44
+assert def_cfg["execution"]["min_ml_prob"] == 0.41
+
+clean_root = os.path.join(tmp, "clean_root")
+def_eng = ExecutionEngine({"storage": {"path": os.path.join(tmp, "t_def.db")}, "_root": clean_root},
+                          store2, verbose=False)
+assert def_eng.gates() == {"min_score": 44.0, "min_ml_prob": 0.41}, def_eng.gates()
+assert def_eng.status()["min_score"] == 44.0 and def_eng.status()["min_ml_prob"] == 0.41
+assert def_eng.status()["entry_type"] == "limit"
+
+# A1: Store.append_setups persists setup_kind, entry_style, entry_valid_bars, rejection
+store_a = Store(os.path.join(tmp, "ta.db"))
+rej_setup = {
+    "symbol": "EURUSD", "tf": "M15", "direction": "long", "verdict": "BUY",
+    "setup_kind": "rejection", "entry_style": "retrace", "entry_valid_bars": 8,
+    "final_score": 80.0, "ml_prob": 0.65, "rr": 2.0,
+    "entry": 1.0840, "stop_loss": 1.0820, "take_profit": 1.0880,
+    "fill_tolerance": 0.0,
+    "entry_zone": {"type": "rejection_bar", "top": 1.0845, "bottom": 1.0835, "origin_time": 1700000500},
+    "rejection": {"bucket": 1, "exp": 3.2, "clv": 85.0, "depth": 20.0, "defs": 2, "mode": "retrace", "swept": []},
+    "formed_at": int(time.time()),
+}
+zone_setup = dict(setup, setup_kind="zone", entry_style="limit", entry_valid_bars=24,
+                  fill_tolerance=0.0,
+                  entry_zone=dict(setup["entry_zone"], origin_time=1700000600))
+store_a.append_setups("EURUSD", "M15", [rej_setup, zone_setup], int(time.time()))
+hist = store_a.load_setups_history("EURUSD", "M15", limit=5)
+by_kind = {json.loads(r["payload"])["setup_kind"]: json.loads(r["payload"]) for r in hist}
+assert by_kind["rejection"]["entry_style"] == "retrace" and by_kind["rejection"]["entry_valid_bars"] == 8
+assert by_kind["rejection"]["rejection"]["bucket"] == 1
+assert by_kind["zone"]["entry_style"] == "limit" and by_kind["zone"]["entry_valid_bars"] == 24
+
+# Verify outcomes.py honors per-family entry_valid_bars (8 for rejection vs 24 for zone)
+import pandas as pd
+from app.engine.outcomes import resolve_pending
+t0_bar = int(rej_setup["formed_at"])
+bar_rows = []
+for bi in range(40):
+    bt = t0_bar + bi * 900
+    if bi == 12:
+        bar_rows.append((bt, 1.0850, 1.0890, 1.0838, 1.0885, 100.0))
+    else:
+        bar_rows.append((bt, 1.0855, 1.0865, 1.0850, 1.0858, 100.0))
+store_a.upsert_candles(pd.DataFrame(bar_rows, columns=["time", "open", "high", "low", "close", "volume"]), "EURUSD", "M15")
+assert resolve_pending(store_a, def_cfg) == 2
+out_rows = {json.loads(r["payload"])["setup_kind"]: r for r in store_a.load_setups_history("EURUSD", "M15", limit=5)}
+assert out_rows["rejection"]["result"] == "EXPIRED_UNFILLED" and out_rows["rejection"]["bars_to_outcome"] == 8, out_rows["rejection"]
+assert out_rows["zone"]["result"] == "WIN" and out_rows["zone"]["filled"] == 1, out_rows["zone"]
+
+# A3: Dry-run routing for zone (limit), rejection retrace (limit), rejection close (market)
+now_ts = int(time.time())
+close_setup = dict(rej_setup, entry_style="close", entry=1.0841,
+                   entry_zone=dict(rej_setup["entry_zone"], origin_time=1700000700))
+store_a.save_analysis("EURUSD", "M15", {
+    "symbol": "EURUSD", "tf": "M15", "generated_at": now_ts,
+    "setups": [zone_setup, rej_setup, close_setup],
+})
+cfg_a = dict(def_cfg)
+cfg_a["storage"] = {"path": os.path.join(tmp, "ta.db")}
+cfg_a["_root"] = clean_root
+cfg_a["execution"] = dict(def_cfg["execution"], enabled=True, dry_run=True,
+                          cooldown_minutes=0, max_open_positions=10, max_per_symbol=10,
+                          max_trades_per_day=10, trading_hours=None)
+eng_a = ExecutionEngine(cfg_a, store_a, allowed_symbols={"EURUSD"}, verbose=False)
+eng_a._connect = lambda: fake_mt5
+sa = eng_a.scan_once()
+assert len(sa["actions"]) == 3, sa
+order_types = [a["order_type"] for a in sa["actions"]]
+assert order_types == ["limit", "limit", "market"], order_types
+
+# A4: Drift guard skips market fallback when eff_rr < min_rr or SL/TP breached
+drift_bad_rr = dict(zone_setup, entry=1.0842, stop_loss=1.0820, take_profit=1.0870,
+                    entry_zone=dict(zone_setup["entry_zone"], origin_time=1700000800))
+drift_breached = dict(zone_setup, entry=1.0842, stop_loss=1.08415, take_profit=1.0880,
+                      entry_zone=dict(zone_setup["entry_zone"], origin_time=1700000900))
+store_a.save_analysis("EURUSD", "M15", {
+    "symbol": "EURUSD", "tf": "M15", "generated_at": now_ts,
+    "setups": [drift_bad_rr, drift_breached],
+})
+sa_drift = eng_a.scan_once()
+assert len(sa_drift["actions"]) == 0, sa_drift
+assert any("drift eff_rr" in k for k in sa_drift["skipped"]), sa_drift["skipped"]
+assert any("drift breached" in k for k in sa_drift["skipped"]), sa_drift["skipped"]
+print("pass 10 (Phase A A1-A5):", order_types, sa_drift["skipped"])
 
 print("\nALL SMOKE TESTS PASSED")

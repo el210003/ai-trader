@@ -54,6 +54,8 @@ smc:
   eq_tolerance_pct: 0.0006   # tolerance (fraction of price) for equal highs/lows clustering
   ob_max_age_bars: 300       # max age of a fresh (unmitigated) order block
   fvg_max_age_bars: 200      # max age of a fresh (unfilled) fair value gap
+  ob_setup_max_age_bars: 150 # max POI origin age (bars) eligible for new OB setups
+  fvg_setup_max_age_bars: 48 # max POI origin age (bars) eligible for new FVG setups
   sweep_lookback_bars: 30    # a sweep within this many bars counts as "recent"
   min_rr: 1.5                # setups below this risk:reward are discarded
   default_rr: 2.0            # fallback RR when no liquidity target gives min_rr
@@ -65,10 +67,8 @@ smc:
   skip_already_tested: true  # skip setups whose entry zone was already retested
                              # since it formed (the fill opportunity is gone)
   require_zone_sweep: false  # require a recent directional liquidity sweep for zone setups
-  retest_buffer_atr: 0.20    # a limit is 'filled' when price comes within this
-                             # many ATRs of the entry (catches 1-3 pip near-misses)
-  entry_valid_bars: 24       # expire a setup that hasn't filled within this many
-                             # bars of its zone forming (kills stale late fills)
+  retest_buffer_atr: 0.0     # strict touch fill (0.0 = exact entry touch, matches MT5 limits)
+  entry_valid_bars: 24       # forward fill window: expire an unfilled zone setup after N bars
   atr_period: 14
 
   # --- Rejection-bar entry family (RejectionProto port; docs/rejection-entry.md).
@@ -200,9 +200,9 @@ execution:
   enabled: false             # master switch (or toggle live from the Trade tab)
   dry_run: true              # true = log what WOULD be sent, no orders go out
   magic: 862001              # unique id tagging every bot order (change if you run two bots)
-  entry_type: market         # market = instant fill at ask/bid
-                             # limit = pending order parked at the setup's zone entry
-                             #        (auto-fallback to market when the zone is at price)
+  entry_type: limit          # limit = pending order parked at the setup's zone entry
+                             #        (auto-fallback to market with drift guard when at price)
+                             # market = instant fill at ask/bid
   deviation: 20              # max slippage for market orders, in points
   risk_percent: 1.0          # % of balance risked per trade, sized from the SL distance
   fixed_lot: null            # set e.g. 0.10 to bypass risk-percent sizing

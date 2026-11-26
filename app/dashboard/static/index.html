@@ -1853,7 +1853,7 @@ function renderExecution(st){
     <span class="sum-chip"><button class="ex-btn ${on&&!st.dry_run?'danger':''}" onclick="toggleDryRun()">${st.dry_run?'Switch to LIVE orders':'Back to DRY-RUN'}</button></span>
     <span class="sum-chip"><button class="ex-btn danger" onclick="flattenAll()">✕ Flatten all</button></span>
     <span class="sum-chip">magic <b>${st.magic??'—'}</b></span>
-    <span class="sum-chip">entry <b>${esc(st.entry_type||'market')}</b></span>
+    <span class="sum-chip">entry <b>${esc(st.entry_type||'limit')}</b></span>
     <span class="sum-chip">risk <b>${st.risk_percent??'—'}%</b>${st.fixed_lot?` · fixed lot <b>${st.fixed_lot}</b>`:''}</span>
     <span class="sum-chip">min score <b>${st.min_score??'—'}</b></span>
     <span class="sum-chip">min ML <b>${st.min_ml_prob!=null?Math.round(st.min_ml_prob*100)+'%':'—'}</b></span>
@@ -1884,8 +1884,8 @@ function renderExecution(st){
         <span class="gate-note">new orders only · ⚠ magic change orphans old bot orders</span>
       </div>`;
   }
-  if (document.activeElement !== $('gateScore'))  $('gateScore').value  = st.min_score ?? 70;
-  if (document.activeElement !== $('gateProb'))   $('gateProb').value   = st.min_ml_prob ?? 0.5;
+  if (document.activeElement !== $('gateScore'))  $('gateScore').value  = st.min_score ?? 44;
+  if (document.activeElement !== $('gateProb'))   $('gateProb').value   = st.min_ml_prob ?? 0.41;
   if (document.activeElement !== $('gateMagic'))  $('gateMagic').value  = st.magic ?? 862001;
   if (document.activeElement !== $('gateComment'))$('gateComment').value = st.comment ?? 'ai-trader';
   const rows = (st.positions||[]).concat((st.pendings||[]).map(p=>({...p, pending:true})));

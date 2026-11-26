@@ -26,6 +26,8 @@ DEFAULTS = {
         "eq_tolerance_pct": 0.0006,
         "ob_max_age_bars": 300,
         "fvg_max_age_bars": 200,
+        "ob_setup_max_age_bars": 150,
+        "fvg_setup_max_age_bars": 48,
         "sweep_lookback_bars": 30,
         "min_rr": 1.5,
         "default_rr": 2.0,
@@ -35,7 +37,7 @@ DEFAULTS = {
         "max_entry_distance_atr": 1.0,
         "skip_already_tested": True,
         "require_zone_sweep": False,
-        "retest_buffer_atr": 0.20,
+        "retest_buffer_atr": 0.0,
         "entry_valid_bars": 24,
         "atr_period": 14,
     },
@@ -108,7 +110,7 @@ DEFAULTS = {
         "enabled": False,              # master switch — default OFF for safety
         "dry_run": True,               # true = record orders without sending (SAFE default)
         "magic": 862001,               # unique id tagging every bot order
-        "entry_type": "market",        # market | limit (limit parks at the zone entry)
+        "entry_type": "limit",         # limit | market (limit parks at the zone entry)
         "deviation": 20,               # max slippage for market orders, in points
         "risk_percent": 1.0,           # % of balance risked per trade (SL-distance sizing)
         "fixed_lot": None,             # set a number to bypass risk-percent sizing

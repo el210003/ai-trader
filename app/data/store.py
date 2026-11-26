@@ -239,6 +239,7 @@ class Store:
         def _row(s):
             p = json.dumps({k: s.get(k) for k in
                             ("confluences", "entry_zone", "range_position",
+                             "setup_kind", "entry_style", "entry_valid_bars", "rejection",
                              "llm_score", "llm_adjustment", "llm_quality", "llm_risk_flags",
                              "aligned", "score_source",
                              "features", "htf_metrics",
