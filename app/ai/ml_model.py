@@ -17,7 +17,7 @@ from .features import FEATURES, feature_vector
 # bump when setup-construction behavior changes (retest buffer, validity
 # window, gates...) - when it changes, deployed models auto-retrain to stay
 # aligned with the setup distribution they predict.
-BUILDER_VERSION = "v6-phase3-features"
+BUILDER_VERSION = "v7-phaseA-strict"
 
 
 def _build_model(backend: str):
@@ -32,10 +32,27 @@ def _build_model(backend: str):
             return XGBClassifier(**params, device="cuda"), "xgboost-cuda"
         except Exception:
             return XGBClassifier(**params, device="cpu"), "xgboost-cpu"
-    from sklearn.ensemble import HistGradientBoostingClassifier
-    return (HistGradientBoostingClassifier(
-        max_iter=200, max_depth=3, learning_rate=0.04,
-        min_samples_leaf=25, l2_regularization=3.0, random_state=42), "sklearn")
+    from sklearn.ensemble import HistGradientBoostingClassifier, VotingClassifier
+    from sklearn.linear_model import LogisticRegression
+    from sklearn.pipeline import make_pipeline
+    from sklearn.preprocessing import RobustScaler
+
+    hgb = HistGradientBoostingClassifier(
+        max_iter=200, max_depth=2, learning_rate=0.03,
+        min_samples_leaf=30, l2_regularization=5.0, random_state=42,
+    )
+    lr = make_pipeline(
+        RobustScaler(),
+        LogisticRegression(C=0.015, max_iter=1000),
+    )
+    return (
+        VotingClassifier(
+            estimators=[("hgb", hgb), ("lr", lr)],
+            voting="soft",
+            weights=[0.30, 0.70],
+        ),
+        "sklearn-ensemble",
+    )
 
 
 def _logit(p: np.ndarray) -> np.ndarray:
@@ -235,8 +252,11 @@ class SetupML:
                     cal.fit(_logit(p_oof).reshape(-1, 1), y_oof)
                     p_cal = cal.predict_proba(_logit(p_oof).reshape(-1, 1))[:, 1]
                     metrics["calibration"] = "sigmoid"
+                from collections import Counter
                 self.calibrator = cal
                 metrics["cv_brier"] = round(float(brier_score_loss(y_oof, p_cal)), 4)
+                top_cnt = Counter(np.round(p_cal, 5)).most_common(1)[0][1]
+                metrics["max_leaf_share"] = round(float(top_cnt / len(p_cal)), 4)
         except Exception:
             self.calibrator = None
         self.metrics = metrics

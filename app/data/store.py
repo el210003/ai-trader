@@ -500,9 +500,13 @@ class Store:
         }
 
     @_locked
-    def live_training_samples(self) -> list:
+    def live_training_samples(self, strict_phase_a: bool = True) -> list:
         """Resolved live outcomes with their journaled features — tier-3
-        training blend. WIN -> 1, LOSS -> 0 (labeler semantics)."""
+        training blend. WIN -> 1, LOSS -> 0 (labeler semantics).
+
+        When `strict_phase_a` is True (default), skips pre-Phase-A rows that
+        lack `setup_kind` or used non-zero `fill_tolerance` so old tolerant-fill
+        outcomes never contaminate strict-fill training."""
         cur = self.conn.execute(
             "SELECT h.symbol, h.tf, h.formed_at, h.direction, h.payload, o.result "
             "FROM outcomes o JOIN setups_history h ON h.id = o.setup_id "
@@ -516,6 +520,11 @@ class Store:
             feats = p.get("features")
             if not feats:
                 continue   # pre-tier-0 rows have no journaled features
+            if strict_phase_a:
+                if p.get("setup_kind") is None:
+                    continue
+                if float(p.get("fill_tolerance") or 0.0) > 0.0:
+                    continue
             out.append({"symbol": symbol, "tf": tf, "formed_at": formed_at,
                         "direction": direction, "features": feats,
                         "label": 1 if result == "WIN" else 0})

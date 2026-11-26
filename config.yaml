@@ -147,6 +147,7 @@ ai:
     buy_threshold: 44        # final score needed to emit BUY/SELL (else WAIT)
     contradiction_penalty: 5.0    # mild penalty when LLM bias disagrees (was 20.0)
     avoid_override_ml_prob: 0.42  # allow strong ML setups (>=0.42) past hard AVOID
+    soft_avoid_on_tech_align: true # treat contradiction as soft penalty when structure/HTF/CSM aligns
     min_llm_adjustment: -8.0 # max negative score points from LLM risk audit
     max_llm_adjustment: 5.0  # max positive score points from LLM risk audit
 

@@ -13,6 +13,7 @@ def fuse(setup: dict, ai_cfg: dict) -> dict:
     threshold = float(hyb.get("buy_threshold", 44))
     contra_penalty = float(hyb.get("contradiction_penalty", 5.0))
     avoid_override_ml = float(hyb.get("avoid_override_ml_prob", 0.42))
+    soft_avoid_tech = bool(hyb.get("soft_avoid_on_tech_align", True))
     min_adj = float(hyb.get("min_llm_adjustment", -8.0))
     max_adj = float(hyb.get("max_llm_adjustment", 5.0))
 
@@ -52,8 +53,21 @@ def fuse(setup: dict, ai_cfg: dict) -> dict:
         final -= contra_penalty
     final = max(0.0, min(100.0, final))
 
+    feats = setup.get("features") or {}
+    hm = setup.get("htf_metrics") or {}
+    confs = setup.get("confluences") or []
+    struct_ok = (
+        bool(setup.get("trend_aligned"))
+        or float(feats.get("trend_alignment") or 0.0) > 0.5
+        or ("market structure aligned" in confs)
+    )
+    htf_ta = hm.get("trend_align") if hm.get("trend_align") is not None else feats.get("htf_trend_align")
+    htf_ok = htf_ta is not None and float(htf_ta) >= 0.5
+    csm_ok = float(feats.get("csm_aligned") or 0.0) > 0.0 or any("CSM aligned" in c for c in confs)
+    tech_aligned = soft_avoid_tech and (struct_ok or htf_ok or csm_ok)
+
     ml_strong = ml is not None and float(ml) >= avoid_override_ml
-    if not aligned and not ml_strong:
+    if not aligned and not ml_strong and not tech_aligned:
         verdict = "AVOID"
     elif final >= threshold:
         verdict = "BUY" if direction == "long" else "SELL"

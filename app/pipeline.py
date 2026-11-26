@@ -705,7 +705,7 @@ def feature_set_hash() -> str:
     validity window, gates...) invalidates deployed models so they retrain,
     keeping the model aligned with the setup distribution it predicts."""
     import hashlib
-    payload = {"features": FEATURES, "builder": BUILDER_VERSION, "cv_cal": "purged-sigmoid-v1"}
+    payload = {"features": FEATURES, "builder": BUILDER_VERSION, "cv_cal": "purged-sigmoid-v2-ensemble"}
     return hashlib.md5(json.dumps(payload).encode()).hexdigest()[:12]
 
 
@@ -1101,7 +1101,7 @@ def train(cfg: dict, store: Store = None, demo: bool = False,
                 aucs0.append(roc_auc_score(y0[va_i], m_tmp.predict_proba(X0[va_i])[:, 1]))
             auc0 = float(_np.mean(aucs0))
             metrics["cv_auc_replay_only"] = round(auc0, 3)
-            if metrics.get("cv_auc") is not None and auc0 > metrics["cv_auc"] + 0.01:
+            if metrics.get("cv_auc") is not None and auc0 > metrics["cv_auc"]:
                 if verbose:
                     print(f"  [live-blend] replay-only cv_auc {auc0:.3f} beats blended "
                           f"{metrics['cv_auc']:.3f} -- retraining on replay only")
