@@ -35,6 +35,7 @@ cfg["telegram"].update({
     "timeframes": [],  # should fall back to mtf.entry_tf (M15)
     "max_event_age_bars": 2,
     "quiet_hours": None,
+    "csv_journal": {"enabled": False},
 })
 
 base_time = 1700000000

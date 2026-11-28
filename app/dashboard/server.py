@@ -314,6 +314,11 @@ def create_app(cfg: dict) -> FastAPI:
                             pipeline.resolve_pending(store, cfg)
                         except Exception as e:
                             state["last_error"] = f"outcome resolve: {e}"
+                        try:
+                            from ..notifications.choch_journal import resolve_choch_outcomes
+                            resolve_choch_outcomes(store, cfg)
+                        except Exception as e:
+                            debug(f"[choch-csv] outcome resolve error: {e}")
                         # phase 2 (Pass 2): enrich only the queued setups with LLM narratives
                         if llm_queue and llm.usable:
                             watch["phase"] = "analyze-llm"

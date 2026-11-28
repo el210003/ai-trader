@@ -250,6 +250,14 @@ telegram:
   #     events: [choch]
   #     timeframes: [H1, H4]
   #     symbols: [EURUSD, XAUUSD]
+  csv_journal:
+    enabled: true                  # log confirmed CHoCH alerts to CSV + simulate 4 SL/TP variants
+    path: data/choch_alerts.csv    # output CSV path (relative to project root)
+    events: [choch]                # event types to journal: [choch] or [choch, bos]
+    horizon_bars: 96               # future closed bars to simulate outcomes (96 M15 bars = 24h)
+    sl_atr: 1.0                    # Variant 1 fixed ATR stop distance
+    tp_atr: 2.0                    # Variant 1 fixed ATR target distance
+    ob_valid_bars: 24              # Variant 3 OB pullback limit order validity window
 
 dashboard:
   debug: true               # verbose console output — shows exactly what each

@@ -692,6 +692,12 @@ def run_all(cfg: dict, store: Store = None, demo: bool = False,
     except Exception as e:
         if verbose:
             print(f"  [warn] outcome resolution failed: {e}")
+    try:
+        from .notifications.choch_journal import resolve_choch_outcomes
+        resolve_choch_outcomes(store, cfg, verbose=verbose)
+    except Exception as e:
+        if verbose:
+            print(f"  [warn] choch csv outcome resolution failed: {e}")
     return count
 
 

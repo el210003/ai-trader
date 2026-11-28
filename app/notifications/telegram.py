@@ -7,6 +7,7 @@ import requests
 
 from ..data.store import Store
 from ..logsetup import debug
+from .choch_journal import record_choch_event
 
 TELEGRAM_API = "https://api.telegram.org"
 
@@ -260,6 +261,10 @@ def notify_structure_events(
                 key = _event_key(symbol, tf, ev, target_prefix=prefix)
                 if store.is_telegram_alert_sent(key):
                     continue
+                try:
+                    record_choch_event(store, cfg, symbol, tf, ev, analysis)
+                except Exception as e:
+                    debug(f"[choch-csv] record error ({symbol} {tf}): {e}")
                 msg = format_structure_message(symbol, tf, ev, smc)
                 ok, err = send_message(token, chat_id, msg, timeout=timeout)
                 if ok:

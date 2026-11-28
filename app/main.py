@@ -491,12 +491,65 @@ def _cmd_migrate_journal(cfg, args):
           f"(removed {res['removed']}) | backup tables *_backup_{res['backup_ts']}")
 
 
+def cmd_choch_stats(cfg, args):
+    """Resolve pending CHoCH CSV outcomes and print the 4-variant edge report."""
+    from .notifications.choch_journal import resolve_choch_outcomes, summarize_choch_journal
+    store = Store(cfg["storage"]["path"])
+    try:
+        n = resolve_choch_outcomes(store, cfg, verbose=True)
+        if n:
+            print(f"resolved {n} pending CHoCH row(s)")
+    finally:
+        store.close()
+
+    rep = summarize_choch_journal(cfg, symbol=args.symbol, tf=args.tf)
+    print(f"CHoCH CSV journal: {rep['csv_path']}")
+    print(f"total logged: {rep['total']} | resolved: {rep['resolved']} | pending: {rep['pending']}\n")
+    if rep["total"] == 0:
+        print("  (no CHoCH rows logged yet — wait for live CHoCH alerts during serve/run)")
+        return
+
+    labels = [
+        ("v1_baseline_atr",    "1. Baseline (1/2 ATR)"),
+        ("v2_structural_mkt",  "2. Structural Market"),
+        ("v3_ob_pullback_lmt", "3. OB Pullback Limit"),
+        ("v4_structure_trail", "4. Structure Trail"),
+    ]
+    print(f"{'Variant':<24} {'Fill':>6} {'W/L/O':>10} {'WR%':>6} {'Exp(R)':>8} {'Tot(R)':>8} {'PF':>6} {'MFE':>6} {'MAE':>6} {'Bars':>6}")
+    print("-" * 94)
+    for key, label in labels:
+        v = rep["variants"][key]
+        wlo = f"{v['wins']}/{v['losses']}/{v['other']}"
+        wr = f"{v['win_rate']*100:.1f}%" if v["win_rate"] is not None else "-"
+        exp = f"{v['expectancy_r']:+.3f}" if v["expectancy_r"] is not None else "-"
+        tot = f"{v['total_r']:+.2f}"
+        pf = ("inf" if v["profit_factor"] == float("inf") else f"{v['profit_factor']:.2f}") if v["profit_factor"] is not None else "-"
+        mfe = f"{v['avg_mfe_r']:.2f}" if v["avg_mfe_r"] is not None else "-"
+        mae = f"{v['avg_mae_r']:.2f}" if v["avg_mae_r"] is not None else "-"
+        bars = f"{v['avg_bars']:.1f}" if v["avg_bars"] is not None else "-"
+        print(f"{label:<24} {v['filled']:>6} {wlo:>10} {wr:>6} {exp:>8} {tot:>8} {pf:>6} {mfe:>6} {mae:>6} {bars:>6}")
+
+    for title, key in [("By Direction", "by_direction"), ("By Recent Sweep", "by_sweep"),
+                       ("By HTF Alignment", "by_htf"), ("By Session", "by_session")]:
+        grp = rep.get(key) or {}
+        if not grp:
+            continue
+        print(f"\n{title}:")
+        print(f"  {'Bucket':<16} {'N':>5} {'V1 Exp':>8} {'V2 Exp':>8} {'V3 Exp':>8} {'V4 Exp':>8} {'6b ATR':>8} {'MFE':>6} {'MAE':>6}")
+        for bname, s in grp.items():
+            f = lambda x: f"{x:+.3f}" if x is not None else "-"
+            g = lambda x: f"{x:.2f}" if x is not None else "-"
+            print(f"  {bname:<16} {s['n']:>5} {f(s['v1_exp_r']):>8} {f(s['v2_exp_r']):>8} "
+                  f"{f(s['v3_exp_r']):>8} {f(s['v4_exp_r']):>8} {f(s['ret_6b_atr']):>8} "
+                  f"{g(s['mfe_atr']):>6} {g(s['mae_atr']):>6}")
+
+
 def main():
     p = argparse.ArgumentParser(prog="ai-trader")
     p.add_argument("command", choices=["ingest", "analyze", "train", "serve",
                                        "run", "list-symbols", "select-symbols",
                                        "history", "outcomes", "insights",
-                                       "migrate-journal", "test-llm", "test-telegram", "trade"])
+                                       "migrate-journal", "test-llm", "test-telegram", "choch-stats", "trade"])
     p.add_argument("--demo", action="store_true", help="use synthetic data instead of MT5")
     p.add_argument("--all-symbols", action="store_true",
                    help="override config.yaml symbols with symbols discovered from MT5")
@@ -546,6 +599,7 @@ def main():
         "migrate-journal": _cmd_migrate_journal,
         "test-llm": cmd_test_llm,
         "test-telegram": cmd_test_telegram,
+        "choch-stats": cmd_choch_stats,
         "trade": cmd_trade,
     }
     handlers[args.command](cfg, args)
