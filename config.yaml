@@ -231,8 +231,8 @@ execution:
 # (TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID) when the fields below are empty.
 telegram:
   enabled: true               # master switch (or toggle live from the dashboard)
-  bot_token: "9057130233:AAEqHk-VcHe3eqXj_lUFQ3_zPNKVlnQUbQk"                # e.g. "123456789:AAH..." (empty -> $TELEGRAM_BOT_TOKEN)
-  chat_id: "-5042733367"                  # e.g. "-1001234567890" or "987654321" (empty -> $TELEGRAM_CHAT_ID)
+  bot_token: ""                # e.g. "123456789:AAH..." (empty -> $TELEGRAM_BOT_TOKEN)
+  chat_id: ""                  # e.g. "-1001234567890" or "987654321" (empty -> $TELEGRAM_CHAT_ID)
   bot_token_env: TELEGRAM_BOT_TOKEN
   chat_id_env: TELEGRAM_CHAT_ID
   events: [choch, bos]         # event types to alert on: choch, bos

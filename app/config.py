@@ -162,7 +162,31 @@ def _deep_merge(base: dict, override: dict) -> dict:
     return out
 
 
+def _load_dotenv(env_path: Path = ROOT / ".env") -> None:
+    """Populate os.environ from a .env file without overriding existing vars."""
+    if not env_path.is_file():
+        return
+    for raw in env_path.read_text(encoding="utf-8").splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("export "):
+            line = line[7:].strip()
+        if "=" not in line:
+            continue
+        key, val = line.split("=", 1)
+        key = key.strip()
+        val = val.strip()
+        if len(val) >= 2 and val[0] == val[-1] and val[0] in ('"', "'"):
+            val = val[1:-1]
+        elif " #" in val:
+            val = val.split(" #", 1)[0].rstrip()
+        if key:
+            os.environ.setdefault(key, val)
+
+
 def load_config(path: str = None, demo: bool = False) -> dict:
+    _load_dotenv()
     cfg_path = Path(path) if path else ROOT / "config.yaml"
     user = {}
     if cfg_path.exists():
